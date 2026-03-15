@@ -1,0 +1,368 @@
+diff --git forkSrcPrefix/include/mpv/render_pixelbuffer.h forkDstPrefix/include/mpv/render_pixelbuffer.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000001
+--- /dev/null
++++ forkDstPrefix/include/mpv/render_pixelbuffer.h
+@@ -0,0 +1,69 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef MPV_RENDER_PIXELBUFFER_H_
++#define MPV_RENDER_PIXELBUFFER_H_
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++ * Callback type for receiving decoded video frames as CVPixelBufferRef.
++ *
++ * Called on mpv's VO thread. The callback must not block for long.
++ *
++ * @param ctx       User-provided context pointer.
++ * @param pixelbuffer   CVPixelBufferRef (caller retains ownership; callback
++ *                      must CFRetain if it needs to keep it beyond the call).
++ * @param pts       Presentation timestamp in seconds (from mpv's timeline).
++ * @param duration  Frame duration in seconds.
++ */
++typedef void (*mpv_pixelbuffer_frame_cb)(void *ctx, void *pixelbuffer,
++                                         double pts, double duration);
++
++/*
++ * Callback type for video reconfiguration events (resolution/format change).
++ *
++ * @param ctx   User-provided context pointer.
++ * @param w     New video width in pixels.
++ * @param h     New video height in pixels.
++ * @param fmt   mpv image format (IMGFMT_*).
++ */
++typedef void (*mpv_pixelbuffer_reconfig_cb)(void *ctx, int w, int h, int fmt);
++
++/*
++ * Register callbacks for the "pixelbuffer" video output.
++ *
++ * Must be called before mpv_initialize(). Set vo=pixelbuffer and
++ * hwdec=videotoolbox for zero-copy CVPixelBuffer delivery.
++ *
++ * @param frame_cb      Frame delivery callback (required).
++ * @param frame_ctx     Context pointer passed to frame_cb.
++ * @param reconfig_cb   Reconfig callback (optional, may be NULL).
++ * @param reconfig_ctx  Context pointer passed to reconfig_cb.
++ */
++void mpv_pixelbuffer_set_callbacks(mpv_pixelbuffer_frame_cb frame_cb,
++                                   void *frame_ctx,
++                                   mpv_pixelbuffer_reconfig_cb reconfig_cb,
++                                   void *reconfig_ctx);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* MPV_RENDER_PIXELBUFFER_H_ */
+diff --git forkSrcPrefix/video/out/vo_pixelbuffer.c forkDstPrefix/video/out/vo_pixelbuffer.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000002
+--- /dev/null
++++ forkDstPrefix/video/out/vo_pixelbuffer.c
+@@ -0,0 +1,256 @@
++/*
++ * VO driver that delivers decoded CVPixelBufferRef frames via callback.
++ *
++ * Designed for Apple platforms: receives hardware-decoded VideoToolbox
++ * frames (IMGFMT_VIDEOTOOLBOX) as zero-copy CVPixelBufferRef, or
++ * creates CVPixelBuffer from software-decoded NV12/420P frames.
++ *
++ * The consumer (Swift layer) feeds these into AVSampleBufferDisplayLayer
++ * for native Metal display and PiP support.
++ *
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <stdlib.h>
++#include <string.h>
++
++#include "config.h"
++
++#if HAVE_VIDEOTOOLBOX || HAVE_IOS_GL || HAVE_VIDEOTOOLBOX_GL || HAVE_VIDEOTOOLBOX_PL
++
++#include <CoreVideo/CoreVideo.h>
++
++#include "common/msg.h"
++#include "vo.h"
++#include "video/mp_image.h"
++#include "video/img_format.h"
++#include "options/m_option.h"
++#include "mpv/render_pixelbuffer.h"
++
++// Global callbacks set by mpv_pixelbuffer_set_callbacks().
++// Only one mpv instance per process is expected (standard for mobile apps).
++static mpv_pixelbuffer_frame_cb g_frame_cb;
++static void *g_frame_ctx;
++static mpv_pixelbuffer_reconfig_cb g_reconfig_cb;
++static void *g_reconfig_ctx;
++
++void mpv_pixelbuffer_set_callbacks(mpv_pixelbuffer_frame_cb frame_cb,
++                                   void *frame_ctx,
++                                   mpv_pixelbuffer_reconfig_cb reconfig_cb,
++                                   void *reconfig_ctx)
++{
++    g_frame_cb = frame_cb;
++    g_frame_ctx = frame_ctx;
++    g_reconfig_cb = reconfig_cb;
++    g_reconfig_ctx = reconfig_ctx;
++}
++
++struct priv {
++    int video_w;
++    int video_h;
++    int video_fmt;
++};
++
++static int query_format(struct vo *vo, int format)
++{
++    switch (format) {
++    case IMGFMT_VIDEOTOOLBOX:
++    case IMGFMT_NV12:
++    case IMGFMT_420P:
++        return 1;
++    default:
++        return 0;
++    }
++}
++
++static int reconfig(struct vo *vo, struct mp_image_params *params)
++{
++    struct priv *p = vo->priv;
++    p->video_w = params->w;
++    p->video_h = params->h;
++    p->video_fmt = params->imgfmt;
++
++    MP_INFO(vo, "pixelbuffer reconfig: %dx%d fmt=%s\n",
++            params->w, params->h, mp_imgfmt_to_name(params->imgfmt));
++
++    if (g_reconfig_cb)
++        g_reconfig_cb(g_reconfig_ctx, params->w, params->h, params->imgfmt);
++
++    return 0;
++}
++
++// Create an IOSurface-backed CVPixelBuffer and copy software-decoded data into it.
++// IOSurface backing is required for AVSampleBufferDisplayLayer and PiP.
++static CVPixelBufferRef create_cvpixelbuffer_from_sw(struct vo *vo,
++                                                      struct mp_image *img)
++{
++    CVPixelBufferRef pb = NULL;
++    OSType cv_fmt;
++    int num_planes;
++
++    switch (img->imgfmt) {
++    case IMGFMT_NV12:
++        cv_fmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
++        num_planes = 2;
++        break;
++    case IMGFMT_420P:
++        cv_fmt = kCVPixelFormatType_420YpCbCr8Planar;
++        num_planes = 3;
++        break;
++    default:
++        MP_WARN(vo, "pixelbuffer: unsupported SW format %s\n",
++                mp_imgfmt_to_name(img->imgfmt));
++        return NULL;
++    }
++
++    // IOSurface backing is required for PiP and AVSampleBufferDisplayLayer
++    CFDictionaryRef io_attrs = CFDictionaryCreate(
++        kCFAllocatorDefault, NULL, NULL, 0,
++        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    const void *keys[] = {
++        kCVPixelBufferIOSurfacePropertiesKey,
++        kCVPixelBufferWidthKey,
++        kCVPixelBufferHeightKey,
++        kCVPixelBufferPixelFormatTypeKey,
++    };
++    int w_val = img->w, h_val = img->h;
++    CFNumberRef cf_w = CFNumberCreate(NULL, kCFNumberIntType, &w_val);
++    CFNumberRef cf_h = CFNumberCreate(NULL, kCFNumberIntType, &h_val);
++    CFNumberRef cf_fmt = CFNumberCreate(NULL, kCFNumberIntType, &cv_fmt);
++    const void *vals[] = { io_attrs, cf_w, cf_h, cf_fmt };
++
++    CFDictionaryRef attrs = CFDictionaryCreate(
++        kCFAllocatorDefault, keys, vals, 4,
++        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++
++    CVReturn ret = CVPixelBufferCreate(
++        kCFAllocatorDefault, img->w, img->h, cv_fmt, attrs, &pb);
++
++    CFRelease(attrs);
++    CFRelease(io_attrs);
++    CFRelease(cf_w);
++    CFRelease(cf_h);
++    CFRelease(cf_fmt);
++
++    if (ret != kCVReturnSuccess) {
++        MP_WARN(vo, "pixelbuffer: CVPixelBufferCreate failed: %d\n", (int)ret);
++        return NULL;
++    }
++
++    CVPixelBufferLockBaseAddress(pb, 0);
++    for (int i = 0; i < num_planes; i++) {
++        int shift_x = (i > 0) ? img->fmt.chroma_xs : 0;
++        int shift_y = (i > 0) ? img->fmt.chroma_ys : 0;
++        size_t src_w = img->w >> shift_x;
++        size_t src_h = img->h >> shift_y;
++        size_t src_stride = img->stride[i];
++        uint8_t *src = img->planes[i];
++
++        uint8_t *dst = CVPixelBufferGetBaseAddressOfPlane(pb, i);
++        size_t dst_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, i);
++
++        // For NV12 plane 1 (interleaved CbCr), width is doubled
++        size_t row_bytes = src_w;
++        if (cv_fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange && i == 1)
++            row_bytes = src_w * 2;
++
++        for (size_t y = 0; y < src_h; y++) {
++            memcpy(dst + y * dst_stride, src + y * src_stride, row_bytes);
++        }
++    }
++    CVPixelBufferUnlockBaseAddress(pb, 0);
++
++    return pb;
++}
++
++static bool draw_frame(struct vo *vo, struct vo_frame *frame)
++{
++    if (!g_frame_cb)
++        return true;
++
++    if (!frame || !frame->current)
++        return true;
++
++    struct mp_image *img = frame->current;
++    double pts = img->pts;
++    double duration = frame->approx_duration;
++
++    if (img->imgfmt == IMGFMT_VIDEOTOOLBOX) {
++        // Zero-copy: planes[3] is the CVPixelBufferRef
++        CVPixelBufferRef pb = (CVPixelBufferRef)img->planes[3];
++        if (pb) {
++            g_frame_cb(g_frame_ctx, pb, pts, duration);
++        }
++    } else {
++        // Software decode fallback: create CVPixelBuffer from planes
++        CVPixelBufferRef pb = create_cvpixelbuffer_from_sw(vo, img);
++        if (pb) {
++            g_frame_cb(g_frame_ctx, pb, pts, duration);
++            CFRelease(pb);
++        }
++    }
++
++    return true;
++}
++
++static void flip_page(struct vo *vo)
++{
++    // No-op: AVSampleBufferDisplayLayer handles display timing
++}
++
++static int preinit(struct vo *vo)
++{
++    if (!g_frame_cb) {
++        MP_ERR(vo, "pixelbuffer: no frame callback registered. "
++               "Call mpv_pixelbuffer_set_callbacks() before mpv_initialize().\n");
++        return -1;
++    }
++    return 0;
++}
++
++static void uninit(struct vo *vo)
++{
++}
++
++static int control(struct vo *vo, uint32_t request, void *data)
++{
++    switch (request) {
++    case VOCTRL_RESET:
++        // Seek/reset: the Swift layer should flush its display layer.
++        // The reconfig callback can be repurposed, or we could add a
++        // dedicated reset callback. For now, this is a no-op since the
++        // Swift layer monitors mpv's seeking state via properties.
++        return VO_TRUE;
++    }
++    return VO_NOTIMPL;
++}
++
++#define OPT_BASE_STRUCT struct priv
++const struct vo_driver video_out_pixelbuffer = {
++    .description = "CVPixelBuffer callback output",
++    .name = "pixelbuffer",
++    .preinit = preinit,
++    .query_format = query_format,
++    .reconfig = reconfig,
++    .control = control,
++    .draw_frame = draw_frame,
++    .flip_page = flip_page,
++    .uninit = uninit,
++    .priv_size = sizeof(struct priv),
++};
++
++#endif /* HAVE_VIDEOTOOLBOX || HAVE_IOS_GL || ... */
+diff --git forkSrcPrefix/meson.build forkDstPrefix/meson.build
+--- forkSrcPrefix/meson.build
++++ forkDstPrefix/meson.build
+@@ -244,6 +244,7 @@ sources = files(
+     'video/out/vo_lavc.c',
+     'video/out/vo_libmpv.c',
+     'video/out/vo_null.c',
++    'video/out/vo_pixelbuffer.c',
+     'video/out/vo_tct.c',
+     'video/out/vo_kitty.c',
+     'video/out/win_state.c',
+diff --git forkSrcPrefix/video/out/vo.c forkDstPrefix/video/out/vo.c
+--- forkSrcPrefix/video/out/vo.c
++++ forkDstPrefix/video/out/vo.c
+@@ -53,6 +53,7 @@ extern const struct vo_driver video_out_xv;
+ extern const struct vo_driver video_out_gpu;
+ extern const struct vo_driver video_out_gpu_next;
+ extern const struct vo_driver video_out_libmpv;
++extern const struct vo_driver video_out_pixelbuffer;
+ extern const struct vo_driver video_out_null;
+ extern const struct vo_driver video_out_image;
+ extern const struct vo_driver video_out_lavc;
+@@ -101,6 +102,9 @@ static const struct vo_driver *const video_out_drivers[] =
+     &video_out_x11,
+ #endif
+     &video_out_libmpv,
++#if HAVE_VIDEOTOOLBOX || HAVE_IOS_GL || HAVE_VIDEOTOOLBOX_GL || HAVE_VIDEOTOOLBOX_PL
++    &video_out_pixelbuffer,
++#endif
+     &video_out_null,
+
+     // should not be auto-selected
