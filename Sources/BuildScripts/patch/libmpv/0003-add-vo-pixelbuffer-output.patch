@@ -78,7 +78,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000002
 --- /dev/null
 +++ forkDstPrefix/video/out/vo_pixelbuffer.c
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,336 @@
 +/*
 + * VO driver that delivers decoded CVPixelBufferRef frames via callback.
 + *
@@ -113,11 +113,13 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +#if HAVE_VIDEOTOOLBOX || HAVE_IOS_GL || HAVE_VIDEOTOOLBOX_GL || HAVE_VIDEOTOOLBOX_PL
 +
 +#include <CoreVideo/CoreVideo.h>
++#include <CoreMedia/CoreMedia.h>
 +
 +#include "common/msg.h"
 +#include "vo.h"
 +#include "video/mp_image.h"
 +#include "video/img_format.h"
++#include "video/csputils.h"
 +#include "options/m_option.h"
 +#include "mpv/render_pixelbuffer.h"
 +
@@ -150,7 +152,9 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +    switch (format) {
 +    case IMGFMT_VIDEOTOOLBOX:
 +    case IMGFMT_NV12:
-+    case IMGFMT_420P:
++    case IMGFMT_P010:
++        // NV12 (8-bit) and P010 (10-bit) are IOSurface-compatible.
++        // I420 (420P) is NOT accepted — mpv will auto-convert to NV12.
 +        return 1;
 +    default:
 +        return 0;
@@ -173,6 +177,81 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +    return 0;
 +}
 +
++// Attach color space metadata from mpv's image params to a CVPixelBuffer.
++// This ensures AVSampleBufferDisplayLayer renders HDR/wide-gamut content correctly.
++static void attach_color_info(CVPixelBufferRef pb, struct mp_image_params *params)
++{
++    // Color primaries
++    CFStringRef primaries = NULL;
++    switch (params->color.primaries) {
++    case PL_COLOR_PRIM_BT_601_525:
++    case PL_COLOR_PRIM_BT_601_625:
++        primaries = kCVImageBufferColorPrimaries_SMPTE_C;
++        break;
++    case PL_COLOR_PRIM_BT_709:
++        primaries = kCVImageBufferColorPrimaries_ITU_R_709_2;
++        break;
++    case PL_COLOR_PRIM_BT_2020:
++        primaries = kCVImageBufferColorPrimaries_ITU_R_2020;
++        break;
++    case PL_COLOR_PRIM_DCI_P3:
++    case PL_COLOR_PRIM_DISPLAY_P3:
++        primaries = kCVImageBufferColorPrimaries_P3_D65;
++        break;
++    default:
++        break;
++    }
++    if (primaries)
++        CVBufferSetAttachment(pb, kCVImageBufferColorPrimariesKey, primaries,
++                              kCVAttachmentMode_ShouldPropagate);
++
++    // Transfer function (gamma / EOTF)
++    CFStringRef transfer = NULL;
++    switch (params->color.transfer) {
++    case PL_COLOR_TRC_BT_1886:
++    case PL_COLOR_TRC_GAMMA22:
++        transfer = kCVImageBufferTransferFunction_ITU_R_709_2;
++        break;
++    case PL_COLOR_TRC_SRGB:
++        transfer = kCVImageBufferTransferFunction_sRGB;
++        break;
++    case PL_COLOR_TRC_PQ:
++        transfer = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ;
++        break;
++    case PL_COLOR_TRC_HLG:
++        transfer = kCVImageBufferTransferFunction_ITU_R_2100_HLG;
++        break;
++    case PL_COLOR_TRC_LINEAR:
++        transfer = kCVImageBufferTransferFunction_Linear;
++        break;
++    default:
++        break;
++    }
++    if (transfer)
++        CVBufferSetAttachment(pb, kCVImageBufferTransferFunctionKey, transfer,
++                              kCVAttachmentMode_ShouldPropagate);
++
++    // YCbCr matrix
++    CFStringRef matrix = NULL;
++    switch (params->repr.sys) {
++    case PL_COLOR_SYSTEM_BT_601:
++        matrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4;
++        break;
++    case PL_COLOR_SYSTEM_BT_709:
++        matrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2;
++        break;
++    case PL_COLOR_SYSTEM_BT_2020_NC:
++    case PL_COLOR_SYSTEM_BT_2020_C:
++        matrix = kCVImageBufferYCbCrMatrix_ITU_R_2020;
++        break;
++    default:
++        break;
++    }
++    if (matrix)
++        CVBufferSetAttachment(pb, kCVImageBufferYCbCrMatrixKey, matrix,
++                              kCVAttachmentMode_ShouldPropagate);
++}
++
 +// Create an IOSurface-backed CVPixelBuffer and copy software-decoded data into it.
 +// IOSurface backing is required for AVSampleBufferDisplayLayer and PiP.
 +static CVPixelBufferRef create_cvpixelbuffer_from_sw(struct vo *vo,
@@ -187,9 +266,9 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +        cv_fmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 +        num_planes = 2;
 +        break;
-+    case IMGFMT_420P:
-+        cv_fmt = kCVPixelFormatType_420YpCbCr8Planar;
-+        num_planes = 3;
++    case IMGFMT_P010:
++        cv_fmt = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
++        num_planes = 2;
 +        break;
 +    default:
 +        MP_WARN(vo, "pixelbuffer: unsupported SW format %s\n",
@@ -243,10 +322,10 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +        uint8_t *dst = CVPixelBufferGetBaseAddressOfPlane(pb, i);
 +        size_t dst_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, i);
 +
-+        // For NV12 plane 1 (interleaved CbCr), width is doubled
-+        size_t row_bytes = src_w;
-+        if (cv_fmt == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange && i == 1)
-+            row_bytes = src_w * 2;
++        // NV12: plane 0 = Y (1 byte/pixel), plane 1 = CbCr (2 bytes/pixel)
++        // P010: plane 0 = Y (2 bytes/pixel), plane 1 = CbCr (4 bytes/pixel)
++        size_t bytes_per_comp = (cv_fmt == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) ? 2 : 1;
++        size_t row_bytes = (i == 0) ? src_w * bytes_per_comp : src_w * 2 * bytes_per_comp;
 +
 +        for (size_t y = 0; y < src_h; y++) {
 +            memcpy(dst + y * dst_stride, src + y * src_stride, row_bytes);
@@ -273,12 +352,14 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +        // Zero-copy: planes[3] is the CVPixelBufferRef
 +        CVPixelBufferRef pb = (CVPixelBufferRef)img->planes[3];
 +        if (pb) {
++            attach_color_info(pb, &img->params);
 +            g_frame_cb(g_frame_ctx, pb, pts, duration);
 +        }
 +    } else {
 +        // Software decode fallback: create CVPixelBuffer from planes
 +        CVPixelBufferRef pb = create_cvpixelbuffer_from_sw(vo, img);
 +        if (pb) {
++            attach_color_info(pb, &img->params);
 +            g_frame_cb(g_frame_ctx, pb, pts, duration);
 +            CFRelease(pb);
 +        }
