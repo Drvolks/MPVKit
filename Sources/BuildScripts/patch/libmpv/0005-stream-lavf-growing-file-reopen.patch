@@ -1,0 +1,152 @@
+diff --git a/stream/stream.h b/stream/stream.h
+index fb62fdd..3694b73 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -152,6 +152,7 @@ typedef struct stream {
+     int mode; //STREAM_READ or STREAM_WRITE
+     int stream_origin; // any STREAM_ORIGIN_*
+     void *priv; // used for DVD, TV, RTSP etc
++    void *growing_file_state; // stream_lavf growing-file reopen state
+     char *url;  // filename/url (possibly including protocol prefix)
+     char *path; // filename (url without protocol prefix)
+     char *mime_type; // when HTTP streaming is used
+diff --git a/stream/stream_lavf.c b/stream/stream_lavf.c
+index 7910b82..21d1ea9 100644
+--- a/stream/stream_lavf.c
++++ b/stream/stream_lavf.c
+@@ -19,6 +19,7 @@
+ #include <libavformat/avio.h>
+ #include <libavutil/opt.h>
+ 
++#include "osdep/timer.h"
+ #include "options/path.h"
+ #include "common/common.h"
+ #include "common/msg.h"
+@@ -39,6 +40,7 @@
+ #define OPT_BASE_STRUCT struct stream_lavf_params
+ struct stream_lavf_params {
+     char **avopts;
++    bool growing_file;
+     bool cookies_enabled;
+     char *cookies_file;
+     char *useragent;
+@@ -55,6 +57,7 @@ struct stream_lavf_params {
+ const struct m_sub_options stream_lavf_conf = {
+     .opts = (const m_option_t[]) {
+         {"stream-lavf-o", OPT_KEYVALUELIST(avopts)},
++        {"stream-lavf-growing-file", OPT_BOOL(growing_file)},
+         {"http-header-fields", OPT_STRINGLIST(http_header_fields)},
+         {"user-agent", OPT_STRING(useragent)},
+         {"referrer", OPT_STRING(referrer)},
+@@ -80,14 +83,87 @@ static const char *const http_like[] =
+ 
+ static int open_f(stream_t *stream);
+ static struct mp_tags *read_icy(stream_t *stream);
++static int seek(stream_t *s, int64_t newpos);
++static int interrupt_cb(void *ctx);
++static int reopen_avio(stream_t *s, int64_t pos);
++
++struct growing_file_state {
++    bool enabled;
++    int64_t last_reopen_time;   // mp_time_ns() of last reopen
++};
+ 
+ static int fill_buffer(stream_t *s, void *buffer, int max_len)
+ {
+     AVIOContext *avio = s->priv;
++    struct growing_file_state *gfs = s->growing_file_state;
+     int r = avio_read_partial(avio, buffer, max_len);
++    if (r > 0)
++        return r;
++    if (!gfs || !gfs->enabled)
++        return -1;
++
++    // Growing file: EOF reached. Only reopen if at least 2 seconds have
++    // passed since the last reopen (like Kodi's sleep-2-then-reopen).
++    // Between reopens, return -1 to let demuxer-force-retry-eof handle
++    // the 1-second throttled wait.
++    int64_t now = mp_time_ns();
++    if (gfs->last_reopen_time > 0 &&
++        (now - gfs->last_reopen_time) < MP_TIME_S_TO_NS(2))
++        return -1;
++
++    int64_t pos = avio_tell(avio);
++    if (pos < 0)
++        return -1;
++
++    gfs->last_reopen_time = now;
++    MP_VERBOSE(s, "Growing file: EOF at %"PRId64", reopening\n", pos);
++
++    if (reopen_avio(s, pos) < 0) {
++        MP_WARN(s, "Growing file: reopen failed\n");
++        return -1;
++    }
++
++    avio = s->priv;
++    r = avio_read_partial(avio, buffer, max_len);
+     return (r <= 0) ? -1 : r;
+ }
+ 
++static int reopen_avio(stream_t *s, int64_t pos)
++{
++    AVIOContext *old_avio = s->priv;
++    if (old_avio)
++        avio_close(old_avio);
++    s->priv = NULL;
++
++    AVDictionary *dict = NULL;
++    mp_setup_av_network_options(&dict, NULL, s->global, s->log);
++
++    AVIOInterruptCB cb = {
++        .callback = interrupt_cb,
++        .opaque = s,
++    };
++
++    AVIOContext *avio = NULL;
++    int err = avio_open2(&avio, s->url, AVIO_FLAG_READ, &cb, &dict);
++    av_dict_free(&dict);
++    if (err < 0) {
++        MP_WARN(s, "Growing file: reopen failed: %d\n", err);
++        return -1;
++    }
++
++    s->priv = avio;
++    s->seekable = avio->seekable & AVIO_SEEKABLE_NORMAL;
++    s->seek = s->seekable ? seek : NULL;
++
++    if (pos > 0) {
++        int64_t new_pos = avio_seek(avio, pos, SEEK_SET);
++        if (new_pos < 0)
++            MP_WARN(s, "Growing file: seek to %"PRId64" failed\n", pos);
++    }
++
++    return 0;
++}
++
+ static int write_buffer(stream_t *s, void *buffer, int len)
+ {
+     AVIOContext *avio = s->priv;
+@@ -446,6 +522,23 @@ static int open_f(stream_t *stream)
+     stream->get_size = get_size;
+     stream->control = control;
+     stream->close = close_f;
++
++    // Growing-file mode: reopen HTTP on EOF to get new data
++    {
++        void *temp2 = talloc_new(NULL);
++        struct stream_lavf_params *opts2 =
++            mp_get_config_group(temp2, stream->global, &stream_lavf_conf);
++        if (opts2->growing_file) {
++            struct growing_file_state *gfs = talloc_zero(stream,
++                                                         struct growing_file_state);
++            gfs->enabled = true;
++            gfs->last_reopen_time = 0;
++            stream->growing_file_state = gfs;
++            MP_VERBOSE(stream, "Growing file mode enabled\n");
++        }
++        talloc_free(temp2);
++    }
++
+     // enable cache (should be avoided for files, but no way to detect this)
+     stream->streaming = true;
+     if (stream->info->stream_origin == STREAM_ORIGIN_NET)

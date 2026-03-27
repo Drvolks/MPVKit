@@ -1,5 +1,4 @@
 diff --git a/demux/demux.c b/demux/demux.c
-index d1accba..cf95ca1 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
 @@ -124,6 +124,7 @@ const struct m_sub_options demux_conf = {
@@ -10,15 +9,16 @@ index d1accba..cf95ca1 100644
          {0}
      },
      .size = sizeof(struct demux_opts),
-@@ -193,6 +194,7 @@ struct demux_internal {
- 
+@@ -193,6 +194,8 @@ struct demux_internal {
+
      bool warned_queue_overflow;
      bool eof;                   // whether we're in EOF state
 +    int eof_retry_count;        // for force_retry_eof: attempts before real EOF
++    int64_t eof_retry_next_ns;  // earliest time to attempt next retry
      double min_secs;
      double hyst_secs;           // stop reading till there's hyst_secs remaining
      bool hyst_active;
-@@ -2252,6 +2254,7 @@ static bool read_packet(struct demux_internal *in)
+@@ -2252,6 +2255,7 @@ static bool read_packet(struct demux_internal *in)
      // Actually read a packet. Drop the lock while doing so, because waiting
      // for disk or network I/O can take time.
      in->reading = true;
@@ -26,19 +26,27 @@ index d1accba..cf95ca1 100644
      in->after_seek = false;
      in->after_seek_to_start = false;
      mp_mutex_unlock(&in->lock);
-@@ -2272,19 +2275,39 @@ static bool read_packet(struct demux_internal *in)
+@@ -2272,19 +2276,47 @@ static bool read_packet(struct demux_internal *in)
      }
- 
+
      if (!in->seeking) {
 -        if (eof) {
-+        if (eof && retry_eof && in->eof_retry_count < 10) {
++        if (eof && retry_eof && in->eof_retry_count < 200) {
 +            // Growing file: don't propagate EOF to the decoder chain.
-+            // Just pause reading and let the demux thread retry on its
-+            // next wakeup (~1s).  Meanwhile ffmpeg's reconnect_at_eof
-+            // will reconnect and fetch newly written data.
++            // Throttle retries to ~1s apart so we don't spin the CPU
++            // while waiting for ffmpeg's reconnect_at_eof to fetch
++            // newly written data.
++            int64_t now = mp_time_ns();
++            if (now < in->eof_retry_next_ns) {
++                // Too early — keep reading=false, let the thread sleep
++                // until the next cache update wakes us (~1s).
++                in->reading = false;
++                return true;
++            }
 +            in->eof_retry_count++;
-+            if (in->eof_retry_count == 1 || (in->eof_retry_count % 5) == 0)
-+                MP_VERBOSE(in, "EOF suppressed (retry %d/10), "
++            in->eof_retry_next_ns = now + MP_TIME_S_TO_NS(1);
++            if (in->eof_retry_count == 1 || (in->eof_retry_count % 10) == 0)
++                MP_VERBOSE(in, "EOF suppressed (retry %d/200), "
 +                           "waiting for new data...\n", in->eof_retry_count);
 +            in->reading = false;
 +            // DON'T set in->eof or mark streams — decoder keeps consuming
@@ -70,3 +78,4 @@ index d1accba..cf95ca1 100644
      }
      return true;
  }
+
