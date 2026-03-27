@@ -493,7 +493,18 @@ class BaseBuild {
             try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Resources", "Resources"], currentDirectoryURL: frameworkDir)
             try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Headers", "Headers"], currentDirectoryURL: frameworkDir)
             try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Modules", "Modules"], currentDirectoryURL: frameworkDir)
-            
+
+            // Remove log files created by Utility.launch() inside the framework bundle
+            // These cause "unsealed contents present in the root directory" code signing errors
+            let versionsLogPath = frameworkDir + "Versions.log"
+            if FileManager.default.fileExists(atPath: versionsLogPath.path) {
+                try FileManager.default.removeItem(at: versionsLogPath)
+            }
+            let frameworkLogPath = frameworkDir.appendingPathExtension("log")
+            if FileManager.default.fileExists(atPath: frameworkLogPath.path) {
+                try FileManager.default.removeItem(at: frameworkLogPath)
+            }
+
             print("\(framework).framework structure fixed")
         }
     }
