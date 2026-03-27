@@ -465,18 +465,34 @@ class BaseBuild {
                 try FileManager.default.moveItem(at: binaryPath, to: newBinaryPath)
             }
             
+            // Move Headers if exists
+            let headersPath = frameworkDir + "Headers"
+            if FileManager.default.fileExists(atPath: headersPath.path) {
+                let newHeadersPath = frameworkDir + ["Versions", "A", "Headers"]
+                try FileManager.default.moveItem(at: headersPath, to: newHeadersPath)
+            }
+
+            // Move Modules if exists
+            let modulesPath = frameworkDir + "Modules"
+            if FileManager.default.fileExists(atPath: modulesPath.path) {
+                let newModulesPath = frameworkDir + ["Versions", "A", "Modules"]
+                try FileManager.default.moveItem(at: modulesPath, to: newModulesPath)
+            }
+
             // Move LICENSE if exists
             let licensePath = frameworkDir + "LICENSE"
             if FileManager.default.fileExists(atPath: licensePath.path) {
                 let newLicensePath = frameworkDir + ["Versions", "A", "LICENSE"]
                 try FileManager.default.moveItem(at: licensePath, to: newLicensePath)
             }
-            
+
             // Create symbolic links using ln to ensure they are relative to the symlink's parent
             let versionsDir = frameworkDir + "Versions"
             try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "A", "Current"], currentDirectoryURL: versionsDir)
             try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/\(framework)", framework], currentDirectoryURL: frameworkDir)
             try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Resources", "Resources"], currentDirectoryURL: frameworkDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Headers", "Headers"], currentDirectoryURL: frameworkDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Modules", "Modules"], currentDirectoryURL: frameworkDir)
             
             print("\(framework).framework structure fixed")
         }
