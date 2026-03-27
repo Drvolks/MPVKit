@@ -1,8 +1,7 @@
 diff --git forkSrcPrefix/audio/out/ao_audiounit.m forkDstPrefix/audio/out/ao_audiounit.m
-index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000001
 --- forkSrcPrefix/audio/out/ao_audiounit.m
 +++ forkDstPrefix/audio/out/ao_audiounit.m
-@@ -146,20 +146,23 @@ static bool init_audiounit(struct ao *ao)
+@@ -146,24 +146,26 @@ static bool init_audiounit(struct ao *ao)
      CHECK_CA_ERROR_L(coreaudio_error_component,
                       "unable to initialize audio unit");
 
