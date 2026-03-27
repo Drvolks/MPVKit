@@ -472,18 +472,11 @@ class BaseBuild {
                 try FileManager.default.moveItem(at: licensePath, to: newLicensePath)
             }
             
-            // Create symbolic links
-            let currentLinkPath = frameworkDir + ["Versions", "Current"]
-            try? FileManager.default.removeItem(at: currentLinkPath)
-            try FileManager.default.createSymbolicLink(atPath: currentLinkPath.path, withDestinationPath: "A")
-            
-            let binaryLinkPath = frameworkDir + framework
-            try? FileManager.default.removeItem(at: binaryLinkPath)
-            try FileManager.default.createSymbolicLink(atPath: binaryLinkPath.path, withDestinationPath: "Versions/Current/\(framework)")
-            
-            let resourcesLinkPath = frameworkDir + "Resources"
-            try? FileManager.default.removeItem(at: resourcesLinkPath)
-            try FileManager.default.createSymbolicLink(atPath: resourcesLinkPath.path, withDestinationPath: "Versions/Current/Resources")
+            // Create symbolic links using ln to ensure they are relative to the symlink's parent
+            let versionsDir = frameworkDir + "Versions"
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "A", "Current"], currentDirectoryURL: versionsDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/\(framework)", framework], currentDirectoryURL: frameworkDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Resources", "Resources"], currentDirectoryURL: frameworkDir)
             
             print("\(framework).framework structure fixed")
         }
