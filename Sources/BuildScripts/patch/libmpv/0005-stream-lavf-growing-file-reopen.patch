@@ -11,7 +11,7 @@ index fb62fdd..3694b73 100644
      char *path; // filename (url without protocol prefix)
      char *mime_type; // when HTTP streaming is used
 diff --git a/stream/stream_lavf.c b/stream/stream_lavf.c
-index 7910b82..21d1ea9 100644
+index 7910b82..45e41b9 100644
 --- a/stream/stream_lavf.c
 +++ b/stream/stream_lavf.c
 @@ -19,6 +19,7 @@
@@ -38,7 +38,7 @@ index 7910b82..21d1ea9 100644
          {"http-header-fields", OPT_STRINGLIST(http_header_fields)},
          {"user-agent", OPT_STRING(useragent)},
          {"referrer", OPT_STRING(referrer)},
-@@ -80,14 +83,87 @@ static const char *const http_like[] =
+@@ -80,14 +83,91 @@ static const char *const http_like[] =
  
  static int open_f(stream_t *stream);
  static struct mp_tags *read_icy(stream_t *stream);
@@ -90,10 +90,10 @@ index 7910b82..21d1ea9 100644
 +static int reopen_avio(stream_t *s, int64_t pos)
 +{
 +    AVIOContext *old_avio = s->priv;
-+    if (old_avio)
-+        avio_close(old_avio);
-+    s->priv = NULL;
 +
++    // Open the new connection BEFORE closing the old one, so s->priv is
++    // never NULL. Other threads (read_icy, control) read s->priv without
++    // locks and would crash on a NULL dereference.
 +    AVDictionary *dict = NULL;
 +    mp_setup_av_network_options(&dict, NULL, s->global, s->log);
 +
@@ -110,9 +110,13 @@ index 7910b82..21d1ea9 100644
 +        return -1;
 +    }
 +
++    // Atomic swap: s->priv is never NULL
 +    s->priv = avio;
 +    s->seekable = avio->seekable & AVIO_SEEKABLE_NORMAL;
 +    s->seek = s->seekable ? seek : NULL;
++
++    if (old_avio)
++        avio_close(old_avio);
 +
 +    if (pos > 0) {
 +        int64_t new_pos = avio_seek(avio, pos, SEEK_SET);
@@ -126,7 +130,7 @@ index 7910b82..21d1ea9 100644
  static int write_buffer(stream_t *s, void *buffer, int len)
  {
      AVIOContext *avio = s->priv;
-@@ -446,6 +522,23 @@ static int open_f(stream_t *stream)
+@@ -446,6 +526,23 @@ static int open_f(stream_t *stream)
      stream->get_size = get_size;
      stream->control = control;
      stream->close = close_f;
