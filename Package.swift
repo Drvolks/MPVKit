@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "MPVKit",
-    platforms: [.macOS(.v11), .iOS(.v14), .tvOS(.v14)],
+    platforms: [.macOS(.v11), .iOS(.v15), .tvOS(.v14)],
     products: [
         .library(
             name: "MPVKit",
@@ -13,6 +13,10 @@ let package = Package(
         .library(
             name: "MPVKit-GPL",
             targets: ["_MPVKit-GPL"]
+        ),
+        .library(
+            name: "MPVPixelBufferBridge",
+            targets: ["MPVPixelBufferBridge"]
         ),
     ],
     targets: [
@@ -51,6 +55,17 @@ let package = Package(
                 .linkedLibrary("xml2"),
                 .linkedLibrary("z"),
                 .linkedLibrary("c++"),
+            ]
+        ),
+        .target(
+            name: "MPVPixelBufferBridge",
+            dependencies: ["_MPVKit"],
+            path: "Sources/MPVPixelBufferBridge",
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("AVKit"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
             ]
         ),
         .target(
@@ -301,8 +316,8 @@ let package = Package(
 
         .binaryTarget(
             name: "Libmpv",
-            url: "https://github.com/mpvkit/MPVKit/releases/download/0.41.0/Libmpv.xcframework.zip",
-            checksum: "9ff5077d675a1e12bec98db167a49f46eb57dba567f40558b7758d4f12fb3ae7"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.41.0-drvolks.6/Libmpv.xcframework.zip",
+            checksum: "389af1e9784a2ab43fc60a42b4c697379ecff6517a5984833a3d426b0477d9f7"
         ),
         //AUTO_GENERATE_TARGETS_END//
     ]

@@ -131,7 +131,12 @@ class BaseBuild {
                 if !fileName.hasSuffix(".patch") {
                     continue
                 }
-                try! Utility.launch(path: "/usr/bin/git", arguments: ["apply", "\((patch + fileName).path)"], currentDirectoryURL: directoryURL)
+                do {
+                    try Utility.launch(path: "/usr/bin/git", arguments: ["apply", "\((patch + fileName).path)"], currentDirectoryURL: directoryURL)
+                } catch {
+                    print("ERROR: Failed to apply patch \(fileName): \(error)")
+                    throw error
+                }
             }
         }
     }
@@ -465,26 +470,46 @@ class BaseBuild {
                 try FileManager.default.moveItem(at: binaryPath, to: newBinaryPath)
             }
             
+            // Move Headers if exists
+            let headersPath = frameworkDir + "Headers"
+            if FileManager.default.fileExists(atPath: headersPath.path) {
+                let newHeadersPath = frameworkDir + ["Versions", "A", "Headers"]
+                try FileManager.default.moveItem(at: headersPath, to: newHeadersPath)
+            }
+
+            // Move Modules if exists
+            let modulesPath = frameworkDir + "Modules"
+            if FileManager.default.fileExists(atPath: modulesPath.path) {
+                let newModulesPath = frameworkDir + ["Versions", "A", "Modules"]
+                try FileManager.default.moveItem(at: modulesPath, to: newModulesPath)
+            }
+
             // Move LICENSE if exists
             let licensePath = frameworkDir + "LICENSE"
             if FileManager.default.fileExists(atPath: licensePath.path) {
                 let newLicensePath = frameworkDir + ["Versions", "A", "LICENSE"]
                 try FileManager.default.moveItem(at: licensePath, to: newLicensePath)
             }
-            
-            // Create symbolic links
-            let currentLinkPath = frameworkDir + ["Versions", "Current"]
-            try? FileManager.default.removeItem(at: currentLinkPath)
-            try FileManager.default.createSymbolicLink(atPath: currentLinkPath.path, withDestinationPath: "A")
-            
-            let binaryLinkPath = frameworkDir + framework
-            try? FileManager.default.removeItem(at: binaryLinkPath)
-            try FileManager.default.createSymbolicLink(atPath: binaryLinkPath.path, withDestinationPath: "Versions/Current/\(framework)")
-            
-            let resourcesLinkPath = frameworkDir + "Resources"
-            try? FileManager.default.removeItem(at: resourcesLinkPath)
-            try FileManager.default.createSymbolicLink(atPath: resourcesLinkPath.path, withDestinationPath: "Versions/Current/Resources")
-            
+
+            // Create symbolic links using ln to ensure they are relative to the symlink's parent
+            let versionsDir = frameworkDir + "Versions"
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "A", "Current"], currentDirectoryURL: versionsDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/\(framework)", framework], currentDirectoryURL: frameworkDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Resources", "Resources"], currentDirectoryURL: frameworkDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Headers", "Headers"], currentDirectoryURL: frameworkDir)
+            try Utility.launch(path: "/bin/ln", arguments: ["-sfn", "Versions/Current/Modules", "Modules"], currentDirectoryURL: frameworkDir)
+
+            // Remove log files created by Utility.launch() inside the framework bundle
+            // These cause "unsealed contents present in the root directory" code signing errors
+            let versionsLogPath = frameworkDir + "Versions.log"
+            if FileManager.default.fileExists(atPath: versionsLogPath.path) {
+                try FileManager.default.removeItem(at: versionsLogPath)
+            }
+            let frameworkLogPath = frameworkDir.appendingPathExtension("log")
+            if FileManager.default.fileExists(atPath: frameworkLogPath.path) {
+                try FileManager.default.removeItem(at: frameworkLogPath)
+            }
+
             print("\(framework).framework structure fixed")
         }
     }

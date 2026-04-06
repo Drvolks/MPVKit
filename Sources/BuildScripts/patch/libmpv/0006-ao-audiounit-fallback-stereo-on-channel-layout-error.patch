@@ -1,0 +1,48 @@
+diff --git forkSrcPrefix/audio/out/ao_audiounit.m forkDstPrefix/audio/out/ao_audiounit.m
+--- forkSrcPrefix/audio/out/ao_audiounit.m
++++ forkDstPrefix/audio/out/ao_audiounit.m
+@@ -146,24 +146,26 @@ static bool init_audiounit(struct ao *ao)
+     CHECK_CA_ERROR_L(coreaudio_error_component,
+                      "unable to initialize audio unit");
+
+-    err = au_get_ary(p->audio_unit, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Output,
+-                     0, (void**)&layout, &size);
+-    CHECK_CA_ERROR_L(coreaudio_error_audiounit,
+-                     "unable to retrieve audio unit channel layout");
+-
+-    MP_VERBOSE(ao, "AU channel layout tag: %x (%x)\n", layout->mChannelLayoutTag, layout->mChannelBitmap);
+-
+-    layout = convert_layout(layout, &size);
+-    if (!layout) {
+-        MP_ERR(ao, "unable to convert channel layout to list format\n");
+-        goto coreaudio_error_audiounit;
+-    }
+-
+-    for (UInt32 i = 0; i < layout->mNumberChannelDescriptions; i++) {
+-        MP_VERBOSE(ao, "channel map: %i: %u\n", i, layout->mChannelDescriptions[i].mChannelLabel);
+-    }
+-
+-    if (af_fmt_is_spdif(ao->format) || instance.outputNumberOfChannels <= 2) {
++    err = au_get_ary(p->audio_unit, kAudioUnitProperty_AudioChannelLayout,
++                     kAudioUnitScope_Output, 0, (void**)&layout, &size);
++    if (err != noErr) {
++        MP_WARN(ao, "unable to retrieve audio unit channel layout (%d), "
++                "falling back to stereo\n", (int)err);
++        layout = NULL;
++    } else {
++        MP_VERBOSE(ao, "AU channel layout tag: %x (%x)\n",
++                   layout->mChannelLayoutTag, layout->mChannelBitmap);
++        layout = convert_layout(layout, &size);
++        if (layout) {
++            for (UInt32 i = 0; i < layout->mNumberChannelDescriptions; i++) {
++                MP_VERBOSE(ao, "channel map: %i: %u\n", i,
++                           layout->mChannelDescriptions[i].mChannelLabel);
++            }
++        }
++    }
++
++    if (!layout || af_fmt_is_spdif(ao->format) ||
++        instance.outputNumberOfChannels <= 2) {
+         ao->channels = (struct mp_chmap)MP_CHMAP_INIT_STEREO;
+         MP_VERBOSE(ao, "using stereo output\n");
+     } else {

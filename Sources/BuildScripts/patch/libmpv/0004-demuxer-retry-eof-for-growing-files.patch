@@ -1,0 +1,81 @@
+diff --git a/demux/demux.c b/demux/demux.c
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -124,6 +124,7 @@ const struct m_sub_options demux_conf = {
+         {"metadata-codepage", OPT_STRING(meta_cp)},
+         {"autocreate-playlist", OPT_CHOICE(autocreate_playlist,
+             {"no", 0}, {"filter", 1}, {"same", 2})},
++        {"demuxer-force-retry-eof", OPT_BOOL(force_retry_eof)},
+         {0}
+     },
+     .size = sizeof(struct demux_opts),
+@@ -193,6 +194,8 @@ struct demux_internal {
+
+     bool warned_queue_overflow;
+     bool eof;                   // whether we're in EOF state
++    int eof_retry_count;        // for force_retry_eof: attempts before real EOF
++    int64_t eof_retry_next_ns;  // earliest time to attempt next retry
+     double min_secs;
+     double hyst_secs;           // stop reading till there's hyst_secs remaining
+     bool hyst_active;
+@@ -2252,6 +2255,7 @@ static bool read_packet(struct demux_internal *in)
+     // Actually read a packet. Drop the lock while doing so, because waiting
+     // for disk or network I/O can take time.
+     in->reading = true;
++    bool retry_eof = in->d_user->opts->force_retry_eof;
+     in->after_seek = false;
+     in->after_seek_to_start = false;
+     mp_mutex_unlock(&in->lock);
+@@ -2272,19 +2276,47 @@ static bool read_packet(struct demux_internal *in)
+     }
+
+     if (!in->seeking) {
+-        if (eof) {
++        if (eof && retry_eof && in->eof_retry_count < 200) {
++            // Growing file: don't propagate EOF to the decoder chain.
++            // Throttle retries to ~1s apart so we don't spin the CPU
++            // while waiting for ffmpeg's reconnect_at_eof to fetch
++            // newly written data.
++            int64_t now = mp_time_ns();
++            if (now < in->eof_retry_next_ns) {
++                // Too early — keep reading=false, let the thread sleep
++                // until the next cache update wakes us (~1s).
++                in->reading = false;
++                return true;
++            }
++            in->eof_retry_count++;
++            in->eof_retry_next_ns = now + MP_TIME_S_TO_NS(1);
++            if (in->eof_retry_count == 1 || (in->eof_retry_count % 10) == 0)
++                MP_VERBOSE(in, "EOF suppressed (retry %d/200), "
++                           "waiting for new data...\n", in->eof_retry_count);
++            in->reading = false;
++            // DON'T set in->eof or mark streams — decoder keeps consuming
++            // buffered data while we wait for reconnect.
++        } else if (eof) {
+             for (int n = 0; n < in->num_streams; n++)
+                 mark_stream_eof(in->streams[n]->ds);
+-            // If we had EOF previously, then don't wakeup (avoids wakeup loop)
+             if (!in->eof) {
+                 if (in->wakeup_cb)
+                     in->wakeup_cb(in->wakeup_cb_ctx);
+                 mp_cond_signal(&in->wakeup);
+                 MP_VERBOSE(in, "EOF reached.\n");
+             }
++            in->eof = eof;
++            in->reading = false;
++        } else {
++            // Successful read — reset retry counter
++            if (in->eof_retry_count > 0) {
++                MP_VERBOSE(in, "EOF retry recovered after %d attempts.\n",
++                           in->eof_retry_count);
++                in->eof_retry_count = 0;
++            }
++            in->eof = false;
++            in->reading = true;
+         }
+-        in->eof = eof;
+-        in->reading = !eof;
+     }
+     return true;
+ }
+
