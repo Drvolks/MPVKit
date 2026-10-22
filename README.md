@@ -31,6 +31,11 @@ A new mpv VO (`vo=pixelbuffer`) that extracts decoded video frames as `CVPixelBu
 - `include/mpv/render_pixelbuffer.h` - Public C API for callback registration
 - `Sources/BuildScripts/patch/libmpv/0003-add-vo-pixelbuffer-output.patch` - Build system patch
 
+**Subtitles and OSD** (patch `0008-vo-pixelbuffer-draw-subtitles.patch`):
+- When mpv has subtitles to show for a frame (`sub-visibility=yes`), the VO copies the frame into a pooled IOSurface `CVPixelBuffer` and draws them with mpv's own renderer (`osd_render` + `mp_draw_sub_bitmaps`). Image subtitles (PGS, VobSub, DVB) and libass-rendered text both work.
+- Frames without subtitles keep the zero-copy path.
+- In PQ/HLG video, subtitle colors are scaled to about 203 nits (SDR reference white) instead of full signal range.
+
 ### 2. `MPVPixelBufferBridge` - Swift Package Target
 
 A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` and provides PiP support.

@@ -1,0 +1,280 @@
+diff --git forkSrcPrefix/video/out/vo_pixelbuffer.c forkDstPrefix/video/out/vo_pixelbuffer.c
+index ae3a82e..4d8b76d 100644
+--- forkSrcPrefix/video/out/vo_pixelbuffer.c
++++ forkDstPrefix/video/out/vo_pixelbuffer.c
+@@ -41,6 +41,9 @@
+ #include "video/csputils.h"
+ #include "options/m_option.h"
+ #include "mpv/render_pixelbuffer.h"
++#include "mpv_talloc.h"
++#include "sub/osd.h"
++#include "sub/draw_bmp.h"
+ 
+ // Global callbacks set by mpv_pixelbuffer_set_callbacks().
+ // Only one mpv instance per process is expected (standard for mobile apps).
+@@ -64,6 +67,13 @@ struct priv {
+     int video_w;
+     int video_h;
+     int video_fmt;
++
++    // Subtitles / OSD: drawn by mpv onto a copy of the frame, only while there
++    // is something to show (the zero-copy path stays zero-copy otherwise).
++    struct mp_draw_sub_cache *osd_cache;
++    CVPixelBufferPoolRef pool;
++    OSType pool_fmt;
++    int pool_w, pool_h;
+ };
+ 
+ static int query_format(struct vo *vo, int format)
+@@ -255,6 +265,194 @@ static CVPixelBufferRef create_cvpixelbuffer_from_sw(struct vo *vo,
+     return pb;
+ }
+ 
++// IOSurface-backed buffer from a pool matching the frame, for frames that get
++// subtitles drawn on them.
++static CVPixelBufferRef pool_buffer(struct vo *vo, OSType fmt, int w, int h)
++{
++    struct priv *p = vo->priv;
++    if (!p->pool || p->pool_fmt != fmt || p->pool_w != w || p->pool_h != h) {
++        if (p->pool) {
++            CVPixelBufferPoolRelease(p->pool);
++            p->pool = NULL;
++        }
++        CFDictionaryRef io_attrs = CFDictionaryCreate(
++            kCFAllocatorDefault, NULL, NULL, 0,
++            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++        CFNumberRef cf_w = CFNumberCreate(NULL, kCFNumberIntType, &w);
++        CFNumberRef cf_h = CFNumberCreate(NULL, kCFNumberIntType, &h);
++        CFNumberRef cf_fmt = CFNumberCreate(NULL, kCFNumberSInt32Type, &fmt);
++        const void *keys[] = {
++            kCVPixelBufferIOSurfacePropertiesKey,
++            kCVPixelBufferWidthKey,
++            kCVPixelBufferHeightKey,
++            kCVPixelBufferPixelFormatTypeKey,
++        };
++        const void *vals[] = { io_attrs, cf_w, cf_h, cf_fmt };
++        CFDictionaryRef attrs = CFDictionaryCreate(
++            kCFAllocatorDefault, keys, vals, 4,
++            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++        CVReturn ret = CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, attrs, &p->pool);
++        CFRelease(attrs);
++        CFRelease(io_attrs);
++        CFRelease(cf_w);
++        CFRelease(cf_h);
++        CFRelease(cf_fmt);
++        if (ret != kCVReturnSuccess) {
++            MP_WARN(vo, "pixelbuffer: CVPixelBufferPoolCreate failed: %d\n", (int)ret);
++            p->pool = NULL;
++            return NULL;
++        }
++        p->pool_fmt = fmt;
++        p->pool_w = w;
++        p->pool_h = h;
++    }
++    CVPixelBufferRef pb = NULL;
++    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, p->pool, &pb) != kCVReturnSuccess)
++        return NULL;
++    return pb;
++}
++
++// Copy of a VideoToolbox frame we are allowed to draw on.
++static CVPixelBufferRef copy_pixelbuffer(struct vo *vo, CVPixelBufferRef src)
++{
++    OSType fmt = CVPixelBufferGetPixelFormatType(src);
++    if (fmt != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
++        fmt != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
++        fmt != kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
++        return NULL;
++
++    int w = (int)CVPixelBufferGetWidth(src);
++    int h = (int)CVPixelBufferGetHeight(src);
++    CVPixelBufferRef dst = pool_buffer(vo, fmt, w, h);
++    if (!dst)
++        return NULL;
++
++    CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
++    CVPixelBufferLockBaseAddress(dst, 0);
++    for (size_t i = 0; i < CVPixelBufferGetPlaneCount(src); i++) {
++        uint8_t *s = CVPixelBufferGetBaseAddressOfPlane(src, i);
++        uint8_t *d = CVPixelBufferGetBaseAddressOfPlane(dst, i);
++        size_t s_stride = CVPixelBufferGetBytesPerRowOfPlane(src, i);
++        size_t d_stride = CVPixelBufferGetBytesPerRowOfPlane(dst, i);
++        size_t rows = CVPixelBufferGetHeightOfPlane(src, i);
++        size_t bytes = MPMIN(s_stride, d_stride);
++        for (size_t y = 0; y < rows; y++)
++            memcpy(d + y * d_stride, s + y * s_stride, bytes);
++    }
++    CVPixelBufferUnlockBaseAddress(dst, 0);
++    CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
++    CVBufferPropagateAttachments(src, dst);
++    return dst;
++}
++
++// Subtitles are authored for SDR white. Drawn as is into PQ/HLG video they
++// would ask the TV for (up to) 10000 nits: scale their colors down to about
++// 203 nits (reference white). Works on private copies of the bitmaps, which
++// belong to mpv's subtitle renderer.
++static float hdr_subtitle_gain(struct mp_image_params *params)
++{
++    switch (params->color.transfer) {
++    case PL_COLOR_TRC_PQ:  return 0.58f;   // PQ code value of 203 nits
++    case PL_COLOR_TRC_HLG: return 0.75f;   // HLG reference white
++    default:               return 1.0f;
++    }
++}
++
++static void dim_bitmaps(struct sub_bitmaps *b, float gain)
++{
++    if (!b->packed)
++        return;
++    struct mp_image *copy = mp_image_new_copy(b->packed);
++    if (!copy)
++        return;
++    talloc_steal(b, copy);
++    talloc_free(b->packed);
++    b->packed = copy;
++
++    int bpp = b->format == SUBBITMAP_BGRA ? 4 : 1;
++    for (int n = 0; n < b->num_parts; n++) {
++        struct sub_bitmap *part = &b->parts[n];
++        part->bitmap = copy->planes[0] + part->src_y * copy->stride[0] + part->src_x * bpp;
++        part->stride = copy->stride[0];
++        if (b->format == SUBBITMAP_LIBASS) {
++            uint32_t c = part->libass.color; // 0xRRGGBBAA, AA = transparency
++            uint32_t r = (uint32_t)(((c >> 24) & 0xff) * gain);
++            uint32_t g = (uint32_t)(((c >> 16) & 0xff) * gain);
++            uint32_t bl = (uint32_t)(((c >> 8) & 0xff) * gain);
++            part->libass.color = (r << 24) | (g << 16) | (bl << 8) | (c & 0xff);
++        }
++    }
++    if (b->format == SUBBITMAP_BGRA) {
++        // Premultiplied alpha: scaling B, G, R keeps the image consistent.
++        for (int y = 0; y < copy->h; y++) {
++            uint8_t *row = copy->planes[0] + y * copy->stride[0];
++            for (int x = 0; x < copy->w; x++) {
++                row[x * 4 + 0] = (uint8_t)(row[x * 4 + 0] * gain);
++                row[x * 4 + 1] = (uint8_t)(row[x * 4 + 1] * gain);
++                row[x * 4 + 2] = (uint8_t)(row[x * 4 + 2] * gain);
++            }
++        }
++    }
++}
++
++static struct sub_bitmap_list *dimmed_copy(struct sub_bitmap_list *in, float gain)
++{
++    struct sub_bitmap_list *out = talloc_zero(NULL, struct sub_bitmap_list);
++    out->change_id = in->change_id;
++    out->w = in->w;
++    out->h = in->h;
++    for (int n = 0; n < in->num_items; n++) {
++        struct sub_bitmaps *item = in->items[n];
++        struct sub_bitmaps *copy = item->packed ? sub_bitmaps_copy(NULL, item) : NULL;
++        if (copy) {
++            talloc_steal(out, copy);
++            dim_bitmaps(copy, gain);
++            item = copy;
++        }
++        MP_TARRAY_APPEND(out, out->items, out->num_items, item);
++    }
++    return out;
++}
++
++// Draw subtitles / OSD for this frame onto `pb` (locked by the caller).
++static void draw_subtitles(struct vo *vo, CVPixelBufferRef pb, struct mp_image *frame_img,
++                           struct sub_bitmap_list *sbs)
++{
++    struct priv *p = vo->priv;
++    int fmt;
++    switch (CVPixelBufferGetPixelFormatType(pb)) {
++    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
++    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
++        fmt = IMGFMT_NV12;
++        break;
++    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
++        fmt = IMGFMT_P010;
++        break;
++    default:
++        return;
++    }
++
++    struct mp_image dst = {0};
++    mp_image_setfmt(&dst, fmt);
++    mp_image_set_size(&dst, (int)CVPixelBufferGetWidth(pb), (int)CVPixelBufferGetHeight(pb));
++    dst.params.color = frame_img->params.color;
++    dst.params.repr = frame_img->params.repr;
++    for (int i = 0; i < 2; i++) {
++        dst.planes[i] = CVPixelBufferGetBaseAddressOfPlane(pb, i);
++        dst.stride[i] = (int)CVPixelBufferGetBytesPerRowOfPlane(pb, i);
++    }
++
++    if (!p->osd_cache)
++        p->osd_cache = mp_draw_sub_alloc(p, vo->global);
++
++    float gain = hdr_subtitle_gain(&frame_img->params);
++    struct sub_bitmap_list *list = gain < 1.0f ? dimmed_copy(sbs, gain) : sbs;
++    if (!mp_draw_sub_bitmaps(p->osd_cache, &dst, list))
++        MP_WARN(vo, "pixelbuffer: failed to draw subtitles\n");
++    if (list != sbs)
++        talloc_free(list);
++}
++
+ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ {
+     if (!g_frame_cb)
+@@ -267,23 +465,43 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     double pts = img->pts;
+     double duration = frame->approx_duration;
+ 
++    // Subtitles (text and image, e.g. PGS) and OSD for this frame, if any.
++    struct mp_osd_res osd_res = osd_res_from_image_params(&img->params);
++    struct sub_bitmap_list *sbs = osd_render(vo->osd, osd_res, pts, 0, mp_draw_sub_formats);
++    bool has_subs = sbs && sbs->num_items > 0;
++
+     if (img->imgfmt == IMGFMT_VIDEOTOOLBOX) {
+         // Zero-copy: planes[3] is the CVPixelBufferRef
+         CVPixelBufferRef pb = (CVPixelBufferRef)img->planes[3];
+         if (pb) {
+             attach_color_info(pb, &img->params);
+-            g_frame_cb(g_frame_ctx, pb, pts, duration);
++            CVPixelBufferRef out = has_subs ? copy_pixelbuffer(vo, pb) : NULL;
++            if (out) {
++                CVPixelBufferLockBaseAddress(out, 0);
++                draw_subtitles(vo, out, img, sbs);
++                CVPixelBufferUnlockBaseAddress(out, 0);
++                g_frame_cb(g_frame_ctx, out, pts, duration);
++                CFRelease(out);
++            } else {
++                g_frame_cb(g_frame_ctx, pb, pts, duration);
++            }
+         }
+     } else {
+         // Software decode fallback: create CVPixelBuffer from planes
+         CVPixelBufferRef pb = create_cvpixelbuffer_from_sw(vo, img);
+         if (pb) {
++            if (has_subs) {
++                CVPixelBufferLockBaseAddress(pb, 0);
++                draw_subtitles(vo, pb, img, sbs);
++                CVPixelBufferUnlockBaseAddress(pb, 0);
++            }
+             attach_color_info(pb, &img->params);
+             g_frame_cb(g_frame_ctx, pb, pts, duration);
+             CFRelease(pb);
+         }
+     }
+ 
++    talloc_free(sbs);
+     return true;
+ }
+ 
+@@ -304,6 +522,11 @@ static int preinit(struct vo *vo)
+ 
+ static void uninit(struct vo *vo)
+ {
++    struct priv *p = vo->priv;
++    if (p->pool) {
++        CVPixelBufferPoolRelease(p->pool);
++        p->pool = NULL;
++    }
+ }
+ 
+ static int control(struct vo *vo, uint32_t request, void *data)
