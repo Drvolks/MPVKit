@@ -2,7 +2,15 @@ diff --git forkSrcPrefix/video/out/vo_pixelbuffer.c forkDstPrefix/video/out/vo_p
 index ae3a82e..4d8b76d 100644
 --- forkSrcPrefix/video/out/vo_pixelbuffer.c
 +++ forkDstPrefix/video/out/vo_pixelbuffer.c
-@@ -41,6 +41,9 @@
+@@ -24,6 +24,7 @@
+  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include <math.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -41,6 +42,9 @@
  #include "video/csputils.h"
  #include "options/m_option.h"
  #include "mpv/render_pixelbuffer.h"
@@ -12,7 +20,7 @@ index ae3a82e..4d8b76d 100644
  
  // Global callbacks set by mpv_pixelbuffer_set_callbacks().
  // Only one mpv instance per process is expected (standard for mobile apps).
-@@ -64,6 +67,13 @@ struct priv {
+@@ -64,6 +68,13 @@
      int video_w;
      int video_h;
      int video_fmt;
@@ -26,10 +34,13 @@ index ae3a82e..4d8b76d 100644
  };
  
  static int query_format(struct vo *vo, int format)
-@@ -255,6 +265,194 @@ static CVPixelBufferRef create_cvpixelbuffer_from_sw(struct vo *vo,
-     return pb;
- }
+@@ -252,9 +263,227 @@
+     }
+     CVPixelBufferUnlockBaseAddress(pb, 0);
  
++    return pb;
++}
++
 +// IOSurface-backed buffer from a pool matching the frame, for frames that get
 +// subtitles drawn on them.
 +static CVPixelBufferRef pool_buffer(struct vo *vo, OSType fmt, int w, int h)
@@ -74,7 +85,7 @@ index ae3a82e..4d8b76d 100644
 +    CVPixelBufferRef pb = NULL;
 +    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, p->pool, &pb) != kCVReturnSuccess)
 +        return NULL;
-+    return pb;
+     return pb;
 +}
 +
 +// Copy of a VideoToolbox frame we are allowed to draw on.
@@ -110,20 +121,46 @@ index ae3a82e..4d8b76d 100644
 +    return dst;
 +}
 +
-+// Subtitles are authored for SDR white. Drawn as is into PQ/HLG video they
-+// would ask the TV for (up to) 10000 nits: scale their colors down to about
-+// 203 nits (reference white). Works on private copies of the bitmaps, which
-+// belong to mpv's subtitle renderer.
-+static float hdr_subtitle_gain(struct mp_image_params *params)
++// Subtitles are authored for SDR: BT.1886 (gamma 2.4), white = 100%. Drawn as is into PQ/HLG
++// video, their code values would be read as PQ/HLG ones: white near the TV's peak. A plain
++// scale of the code values fixes white but darkens everything below it (a light grey PGS
++// subtitle ended up near 60 nits, grey and hard to read). So each 8-bit SDR value goes
++// through its light level instead: SDR white lands at SUB_HDR_WHITE_NITS and greys keep their
++// brightness relative to it. Works on private copies of the bitmaps, which belong to mpv's
++// subtitle renderer.
++#define SUB_HDR_WHITE_NITS 300.0
++
++static double pq_encode(double nits)
 +{
-+    switch (params->color.transfer) {
-+    case PL_COLOR_TRC_PQ:  return 0.58f;   // PQ code value of 203 nits
-+    case PL_COLOR_TRC_HLG: return 0.75f;   // HLG reference white
-+    default:               return 1.0f;
-+    }
++    const double m1 = 0.1593017578125, m2 = 78.84375;
++    const double c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
++    double y = pow(fmax(nits, 0.0) / 10000.0, m1);
++    return pow((c1 + c2 * y) / (1.0 + c3 * y), m2);
 +}
 +
-+static void dim_bitmaps(struct sub_bitmaps *b, float gain)
++static double hlg_encode(double scene)
++{
++    const double a = 0.17883277, b = 0.28466892, c = 0.55991073;
++    return scene <= 1.0 / 12.0 ? sqrt(3.0 * scene) : a * log(12.0 * scene - b) + c;
++}
++
++// SDR code value -> PQ/HLG code value. False when the video is not HDR.
++static bool subtitle_tone_lut(struct mp_image_params *params, uint8_t lut[256])
++{
++    int trc = params->color.transfer;
++    if (trc != PL_COLOR_TRC_PQ && trc != PL_COLOR_TRC_HLG)
++        return false;
++    for (int v = 0; v < 256; v++) {
++        double linear = pow(v / 255.0, 2.4);
++        double out = trc == PL_COLOR_TRC_PQ
++            ? pq_encode(linear * SUB_HDR_WHITE_NITS)
++            : hlg_encode(linear * 0.2637);  // HLG reference white: 75% signal
++        lut[v] = (uint8_t)lrint(fmin(fmax(out, 0.0), 1.0) * 255.0);
++    }
++    return true;
+ }
+ 
++static void tone_map_bitmaps(struct sub_bitmaps *b, const uint8_t lut[256])
 +{
 +    if (!b->packed)
 +        return;
@@ -141,26 +178,29 @@ index ae3a82e..4d8b76d 100644
 +        part->stride = copy->stride[0];
 +        if (b->format == SUBBITMAP_LIBASS) {
 +            uint32_t c = part->libass.color; // 0xRRGGBBAA, AA = transparency
-+            uint32_t r = (uint32_t)(((c >> 24) & 0xff) * gain);
-+            uint32_t g = (uint32_t)(((c >> 16) & 0xff) * gain);
-+            uint32_t bl = (uint32_t)(((c >> 8) & 0xff) * gain);
++            uint32_t r = lut[(c >> 24) & 0xff], g = lut[(c >> 16) & 0xff], bl = lut[(c >> 8) & 0xff];
 +            part->libass.color = (r << 24) | (g << 16) | (bl << 8) | (c & 0xff);
 +        }
 +    }
 +    if (b->format == SUBBITMAP_BGRA) {
-+        // Premultiplied alpha: scaling B, G, R keeps the image consistent.
++        // Premultiplied alpha: map the straight color, then premultiply again.
 +        for (int y = 0; y < copy->h; y++) {
 +            uint8_t *row = copy->planes[0] + y * copy->stride[0];
 +            for (int x = 0; x < copy->w; x++) {
-+                row[x * 4 + 0] = (uint8_t)(row[x * 4 + 0] * gain);
-+                row[x * 4 + 1] = (uint8_t)(row[x * 4 + 1] * gain);
-+                row[x * 4 + 2] = (uint8_t)(row[x * 4 + 2] * gain);
++                uint8_t *px = row + x * 4;
++                unsigned a = px[3];
++                if (!a)
++                    continue;
++                for (int i = 0; i < 3; i++) {
++                    unsigned straight = MPMIN(255u, (px[i] * 255u + a / 2) / a);
++                    px[i] = (uint8_t)((lut[straight] * a + 127) / 255);
++                }
 +            }
 +        }
 +    }
 +}
 +
-+static struct sub_bitmap_list *dimmed_copy(struct sub_bitmap_list *in, float gain)
++static struct sub_bitmap_list *tone_mapped_copy(struct sub_bitmap_list *in, const uint8_t lut[256])
 +{
 +    struct sub_bitmap_list *out = talloc_zero(NULL, struct sub_bitmap_list);
 +    out->change_id = in->change_id;
@@ -171,7 +211,7 @@ index ae3a82e..4d8b76d 100644
 +        struct sub_bitmaps *copy = item->packed ? sub_bitmaps_copy(NULL, item) : NULL;
 +        if (copy) {
 +            talloc_steal(out, copy);
-+            dim_bitmaps(copy, gain);
++            tone_map_bitmaps(copy, lut);
 +            item = copy;
 +        }
 +        MP_TARRAY_APPEND(out, out->items, out->num_items, item);
@@ -210,8 +250,9 @@ index ae3a82e..4d8b76d 100644
 +    if (!p->osd_cache)
 +        p->osd_cache = mp_draw_sub_alloc(p, vo->global);
 +
-+    float gain = hdr_subtitle_gain(&frame_img->params);
-+    struct sub_bitmap_list *list = gain < 1.0f ? dimmed_copy(sbs, gain) : sbs;
++    uint8_t lut[256];
++    bool hdr = subtitle_tone_lut(&frame_img->params, lut);
++    struct sub_bitmap_list *list = hdr ? tone_mapped_copy(sbs, lut) : sbs;
 +    if (!mp_draw_sub_bitmaps(p->osd_cache, &dst, list))
 +        MP_WARN(vo, "pixelbuffer: failed to draw subtitles\n");
 +    if (list != sbs)
@@ -221,7 +262,7 @@ index ae3a82e..4d8b76d 100644
  static bool draw_frame(struct vo *vo, struct vo_frame *frame)
  {
      if (!g_frame_cb)
-@@ -267,23 +465,43 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -267,23 +496,43 @@
      double pts = img->pts;
      double duration = frame->approx_duration;
  
@@ -266,7 +307,7 @@ index ae3a82e..4d8b76d 100644
      return true;
  }
  
-@@ -304,6 +522,11 @@ static int preinit(struct vo *vo)
+@@ -304,6 +553,11 @@
  
  static void uninit(struct vo *vo)
  {
