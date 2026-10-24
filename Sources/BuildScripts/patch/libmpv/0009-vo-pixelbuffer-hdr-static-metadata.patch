@@ -1,0 +1,77 @@
+diff --git forkSrcPrefix/video/out/vo_pixelbuffer.c forkDstPrefix/video/out/vo_pixelbuffer.c
+--- forkSrcPrefix/video/out/vo_pixelbuffer.c
++++ forkDstPrefix/video/out/vo_pixelbuffer.c
+@@ -107,10 +107,73 @@
+     return 0;
+ }
+ 
++static void put_be16(uint8_t *p, double v)
++{
++    uint32_t x = v <= 0 ? 0 : v >= 65535 ? 65535 : (uint32_t)lrint(v);
++    p[0] = x >> 8;
++    p[1] = x;
++}
++
++static void put_be32(uint8_t *p, double v)
++{
++    uint32_t x = v <= 0 ? 0 : v >= 4294967295.0 ? 4294967295u : (uint32_t)llrint(v);
++    p[0] = x >> 24;
++    p[1] = x >> 16;
++    p[2] = x >> 8;
++    p[3] = x;
++}
++
++static void set_data_attachment(CVPixelBufferRef pb, CFStringRef key, const uint8_t *bytes,
++                                CFIndex len)
++{
++    CFDataRef data = CFDataCreate(kCFAllocatorDefault, bytes, len);
++    if (data) {
++        CVBufferSetAttachment(pb, key, data, kCVAttachmentMode_ShouldPropagate);
++        CFRelease(data);
++    }
++}
++
++// HDR10 static metadata (mastering display, content light levels), in the byte layout of the
++// HEVC SEI messages. AVPlayer hands them to the TV; without them the TV guesses the content's
++// brightness, and a TCL showed a 1000-nit remux very dark. Only what the file carries is
++// attached: zeros mean "unknown" and are left out.
++static void attach_hdr_metadata(CVPixelBufferRef pb, struct mp_image_params *params)
++{
++    if (params->color.transfer != PL_COLOR_TRC_PQ)
++        return;
++
++    const struct pl_hdr_metadata *hdr = &params->color.hdr;
++    const struct pl_raw_primaries *prim = &hdr->prim;
++    if (prim->red.x > 0 && prim->green.x > 0 && prim->blue.x > 0 && prim->white.x > 0 &&
++        hdr->max_luma > 0)
++    {
++        // Primaries in G, B, R order then white point, in 0.00002 units; luminance in
++        // 0.0001 cd/m².
++        const struct pl_cie_xy xy[4] = {prim->green, prim->blue, prim->red, prim->white};
++        uint8_t mdcv[24];
++        for (int i = 0; i < 4; i++) {
++            put_be16(mdcv + i * 4, xy[i].x * 50000.0);
++            put_be16(mdcv + i * 4 + 2, xy[i].y * 50000.0);
++        }
++        put_be32(mdcv + 16, hdr->max_luma * 10000.0);
++        put_be32(mdcv + 20, hdr->min_luma * 10000.0);
++        set_data_attachment(pb, kCVImageBufferMasteringDisplayColorVolumeKey, mdcv, sizeof(mdcv));
++    }
++
++    if (hdr->max_cll > 0) {
++        uint8_t clli[4];
++        put_be16(clli, hdr->max_cll);
++        put_be16(clli + 2, hdr->max_fall);
++        set_data_attachment(pb, kCVImageBufferContentLightLevelInfoKey, clli, sizeof(clli));
++    }
++}
++
+ // Attach color space metadata from mpv's image params to a CVPixelBuffer.
+ // This ensures AVSampleBufferDisplayLayer renders HDR/wide-gamut content correctly.
+ static void attach_color_info(CVPixelBufferRef pb, struct mp_image_params *params)
+ {
++    attach_hdr_metadata(pb, params);
++
+     // Color primaries
+     CFStringRef primaries = NULL;
+     switch (params->color.primaries) {

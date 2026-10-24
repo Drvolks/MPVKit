@@ -36,6 +36,10 @@ A new mpv VO (`vo=pixelbuffer`) that extracts decoded video frames as `CVPixelBu
 - Frames without subtitles keep the zero-copy path.
 - In PQ/HLG video, subtitle colors are scaled to about 203 nits (SDR reference white) instead of full signal range.
 
+**HDR10 static metadata** (patch `0009-vo-pixelbuffer-hdr-static-metadata.patch`):
+- PQ frames carry the file's mastering display (`kCVImageBufferMasteringDisplayColorVolumeKey`) and content light levels (`kCVImageBufferContentLightLevelInfoKey`), in the HEVC SEI byte layout. They reach the `CMVideoFormatDescription` and the TV, as with AVPlayer. Without them some TVs guess the content's brightness and show it too dark.
+- Values the file does not carry (zeros) are left out.
+
 ### 2. `MPVPixelBufferBridge` - Swift Package Target
 
 A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` and provides PiP support.
