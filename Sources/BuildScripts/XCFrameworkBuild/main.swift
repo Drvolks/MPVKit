@@ -50,7 +50,7 @@ enum Library: String, CaseIterable {
         case .libmpv:
             return "v0.41.0"
         case .FFmpeg:
-            return "n8.0.1"
+            return "n9.0.2"
         case .openssl:
             return "3.3.5"
         case .gnutls:
@@ -60,37 +60,37 @@ enum Library: String, CaseIterable {
         case .gmp:
             return "3.8.11"
         case .libass:
-            return "0.17.4"
+            return "0.17.5"
         case .libunibreak:
-            return "0.17.4"
+            return "0.17.5"
         case .libfreetype:
-            return "0.17.4"
+            return "0.17.5"
         case .libfribidi:
-            return "0.17.4"
+            return "0.17.5"
         case .libharfbuzz:
-            return "0.17.4"
+            return "0.17.5"
         case .libsmbclient:
             return "4.15.13-2512"
         case .libdav1d:    // AV1 decoding
-            return "1.5.2-xcode"
+            return "1.5.3"
         case .lcms2:
             return "2.17.0"
         case .libplacebo:
-            return "7.351.0-2512"
+            return "7.360.1"
         case .libdovi:
             return "3.3.2"
         case .vulkan:
-            return "1.4.1"
+            return "1.4.2"
         case .libshaderc:  // compiling GLSL (OpenGL Shading Language) shaders into SPIR-V (Standard Portable Intermediate Representation - Vulkan) code
             return "2025.5.0"
         case .libuchardet:
-            return "0.0.8-xcode"
+            return "0.0.8"
         case .libbluray:
             return "1.4.0"
         case .libluajit:
-            return "2.1.0-xcode"
+            return "2.1.0-fix"
         case .libuavs3d:
-            return "1.2.1-xcode"
+            return "1.2.1-fix"
         }
     }
 
@@ -425,11 +425,13 @@ private class BuildMPV: BaseBuild {
             array.append("-Dvideotoolbox-pl=enabled")
             array.append("-Dswift-build=disabled")
             array.append("-Daudiounit=enabled")
-            array.append("-Davfoundation=disabled")
+            // Enable the avfoundation AO (AVSampleBufferAudioRenderer) on iOS/tvOS.
+            // CoreAudio HAL (AudioObject*) is macOS-only, so keep coreaudio off.
+            array.append("-Davfoundation=enabled")
+            array.append("-Dcoreaudio=disabled")
             array.append("-Dlua=disabled")
             if platform == .maccatalyst {
                 array.append("-Dcocoa=disabled")
-                array.append("-Dcoreaudio=disabled")
             } else if platform == .xros || platform == .xrsimulator {
                 array.append("-Dios-gl=disabled")
             } else {
@@ -455,6 +457,11 @@ private class BuildFFMPEG: BaseBuild {
         }
         if Utility.shell("which sdl2-config") == nil {
             Utility.shell("brew install sdl2")
+        }
+        // FFmpeg n9.0+ compiles Vulkan shaders at build time via glslc (spirv_compiler).
+        // Previously spirv_compiler came from runtime libshaderc/libglslang, now removed.
+        if Utility.shell("which glslc") == nil, Utility.shell("which glslangValidator") == nil, Utility.shell("which glslang") == nil {
+            Utility.shell("brew install glslang")
         }
 
         let lldbFile = URL.currentDirectory + "LLDBInitFile"
@@ -607,7 +614,10 @@ private class BuildFFMPEG: BaseBuild {
         //        if platform == .isimulator || platform == .tvsimulator {
         //            arguments.append("--assert-level=1")
         //        }
-        var dependencyLibrary = [Library.gmp, .gnutls, .libfreetype, .libharfbuzz, .libfribidi, .libass, .vulkan, .libshaderc, .lcms2, .libplacebo, .libdav1d, .libuavs3d]
+        // FFmpeg n9.0 removed --enable-libshaderc/--enable-libglslang (commit 062de19).
+        // Vulkan shaders are now compiled at build time via glslc (spirv_compiler),
+        // so don't pass libshaderc to FFmpeg. libshaderc is still built for libplacebo/mpv.
+        var dependencyLibrary = [Library.gmp, .gnutls, .libfreetype, .libharfbuzz, .libfribidi, .libass, .vulkan, .lcms2, .libplacebo, .libdav1d, .libuavs3d]
         if BaseBuild.options.enableGPL {
             dependencyLibrary += [.libsmbclient]
         }
@@ -636,7 +646,7 @@ private class BuildFFMPEG: BaseBuild {
         if framework == "Libavcodec" {
             return ["xvmc", "vdpau", "qsv", "dxva2", "d3d11va", "d3d12va"]
         } else if framework == "Libavutil" {
-            return ["hwcontext_vulkan", "hwcontext_vdpau", "hwcontext_vaapi", "hwcontext_qsv", "hwcontext_opencl", "hwcontext_dxva2", "hwcontext_d3d11va", "hwcontext_d3d12va", "hwcontext_cuda"]
+            return ["hwcontext_vulkan", "hwcontext_vdpau", "hwcontext_vaapi", "hwcontext_qsv", "hwcontext_opencl", "hwcontext_dxva2", "hwcontext_d3d11va", "hwcontext_d3d12va", "hwcontext_cuda", "hwcontext_amf"]
         } else {
             return super.frameworkExcludeHeaders(framework)
         }
@@ -647,7 +657,7 @@ private class BuildFFMPEG: BaseBuild {
         "--disable-armv5te", "--disable-armv6", "--disable-armv6t2",
         "--disable-bzlib", "--disable-gray", "--disable-iconv", "--disable-linux-perf",
         "--disable-shared", "--disable-small", "--disable-symver", "--disable-xlib",
-        "--enable-cross-compile", "--enable-libxml2", "--enable-nonfree",
+        "--enable-cross-compile", "--enable-libxml2",
         "--enable-optimizations", "--enable-pic", "--enable-runtime-cpudetect", "--enable-static", "--enable-thumb", "--enable-version3",
         "--pkg-config-flags=--static",
         // Documentation options:
@@ -666,7 +676,7 @@ private class BuildFFMPEG: BaseBuild {
         // ,"--disable-rdft"
         // ,"--disable-fft"
         // Hardware accelerators:
-        "--disable-d3d11va", "--disable-d3d12va", "--disable-dxva2", "--disable-vaapi", "--disable-vdpau",
+        "--disable-amf", "--disable-d3d11va", "--disable-d3d12va", "--disable-dxva2", "--disable-vaapi", "--disable-vdpau",
         // Individual component options:
         // ,"--disable-everything"
         // ./configure --list-muxers
@@ -721,7 +731,7 @@ private class BuildFFMPEG: BaseBuild {
         "--enable-decoder=amr*", "--enable-decoder=ape", "--enable-decoder=cook",
         "--enable-decoder=dca", "--enable-decoder=dolby_e", "--enable-decoder=eac3*", "--enable-decoder=flac",
         "--enable-decoder=mp1*", "--enable-decoder=mp2*", "--enable-decoder=mp3*", "--enable-decoder=opus",
-        "--enable-decoder=pcm*", "--enable-decoder=sonic",
+        "--enable-decoder=pcm*",
         "--enable-decoder=truehd", "--enable-decoder=tta", "--enable-decoder=vorbis", "--enable-decoder=wma*",
         // 字幕
         "--enable-decoder=ass", "--enable-decoder=ccaption", "--enable-decoder=dvbsub", "--enable-decoder=dvdsub",
@@ -887,6 +897,10 @@ private class BuildShaderc: ZipBaseBuild {
 private class BuildVulkan: ZipBaseBuild {
     init() {
         super.init(library: .vulkan)
+    }
+
+    override func frameworks() throws -> [String] {
+        ["MoltenVK"]
     }
 
     override func buildALL() throws {
