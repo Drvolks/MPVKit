@@ -57,13 +57,13 @@ A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` an
 https://github.com/Drvolks/MPVKit.git
 ```
 
-Use exact version `0.41.0-drvolks.1` or the `feature/pixelbuffer-vo` branch.
+Use an exact version, e.g. `0.41.0-drvolks.12` (mpv v0.41.0, FFmpeg n9.0.2).
 
 Add both products to your target:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.41.0-drvolks.1")
+    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.41.0-drvolks.12")
 ],
 targets: [
     .target(
