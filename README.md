@@ -1,7 +1,7 @@
 # MPVKit (Drvolks Fork)
 
 [![mpv](https://img.shields.io/badge/mpv-v0.41.0-blue.svg)](https://github.com/mpv-player/mpv)
-[![ffmpeg](https://img.shields.io/badge/ffmpeg-n8.0.1-blue.svg)](https://github.com/FFmpeg/FFmpeg)
+[![ffmpeg](https://img.shields.io/badge/ffmpeg-n9.0.2-blue.svg)](https://github.com/FFmpeg/FFmpeg)
 [![license](https://img.shields.io/github/license/mpvkit/MPVKit)](https://github.com/mpvkit/MPVKit/main/LICENSE)
 
 Fork of [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) with a custom video output plugin and Swift bridge for `AVSampleBufferDisplayLayer` rendering and native Picture-in-Picture support on Apple platforms.
