@@ -57,18 +57,18 @@ A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` an
 https://github.com/Drvolks/MPVKit.git
 ```
 
-Use an exact version, e.g. `0.42.0-drvolks.1` (mpv v0.42.0, FFmpeg n9.0.2).
+Use an exact version, e.g. `0.42.0-drvolks.2` (mpv v0.42.0, FFmpeg n9.0.2).
 
 Notes for mpv 0.42:
 - `--tls-verify` is now on by default, but the gnutls build has no CA store on iOS/tvOS, so HTTPS streams fail unless you set `tls-verify=no` (or pass a CA bundle with `tls-ca-file`).
 - Built with `-Dlibcurl=disabled`: HTTP keeps going through `stream_lavf`, so `stream-lavf-growing-file` still works.
-- libplacebo comes from [Drvolks/libplacebo-build](https://github.com/Drvolks/libplacebo-build) (`7.387.0-drvolks.1`), since mpv 0.42 needs libplacebo >= 7.387.0.
+- libplacebo comes from [Drvolks/libplacebo-build](https://github.com/Drvolks/libplacebo-build) (`7.387.0-drvolks.1`), since mpv 0.42 needs libplacebo >= 7.387.0. FFmpeg is rebuilt against it and shipped from this fork too (the LGPL `Libav*`/`Libsw*` frameworks): mpvkit's prebuilt FFmpeg references libplacebo 7.360 symbols and fails to link. The `-GPL` products still point to mpvkit's binaries and won't link with this libplacebo.
 
 Add both products to your target:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.42.0-drvolks.1")
+    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.42.0-drvolks.2")
 ],
 targets: [
     .target(
