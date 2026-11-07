@@ -1,5 +1,5 @@
 diff --git a/audio/out/ao_coreaudio.c b/audio/out/ao_coreaudio.c
-index 4b4bf1d..22856e4 100644
+index 6247bbf..147287b 100644
 --- a/audio/out/ao_coreaudio.c
 +++ b/audio/out/ao_coreaudio.c
 @@ -28,12 +28,35 @@
@@ -46,24 +46,7 @@ index 4b4bf1d..22856e4 100644
  };
  
  static int64_t ca_get_hardware_latency(struct ao *ao) {
-@@ -196,6 +220,16 @@ static int init(struct ao *ao)
-     return CONTROL_OK;
- 
- coreaudio_error:
-+    // The hotplug listener is registered early in init(), but ao_uninit() only
-+    // calls the driver's uninit() (and thus unregister_hotplug_cb()) when
-+    // init() succeeded, i.e. once ao->driver_initialized is set. Failing here
-+    // without unregistering would leave the CoreAudio listener installed for
-+    // good, pointing at an `ao` that ao_init() frees on its way out - the next
-+    // device change then runs hotplug_cb() on freed memory. This is the common
-+    // case on macOS 26/27, where coreaudio init regularly fails and the player
-+    // silently falls back to another ao (e.g. --ao=coreaudio,avfoundation).
-+    if (p->hotplug_cb_registration_times)
-+        unregister_hotplug_cb(ao);
-     return CONTROL_ERROR;
- }
- 
-@@ -457,15 +491,29 @@ static void uninit(struct ao *ao)
+@@ -481,9 +505,21 @@ static void uninit(struct ao *ao)
  
  static OSStatus hotplug_cb(AudioObjectID id, UInt32 naddr,
                             const AudioObjectPropertyAddress addr[],
@@ -86,16 +69,17 @@ index 4b4bf1d..22856e4 100644
 +    struct ao *ao = ctx->ao;
      struct priv *p = ao->priv;
      MP_VERBOSE(ao, "Handling potential hotplug event...\n");
-     reinit_device(ao);
-     if (p->audio_unit)
-         reinit_latency(ao);
+     AudioDeviceID old_device = p->device;
+@@ -495,6 +531,8 @@ static OSStatus hotplug_cb(AudioObjectID id, UInt32 naddr,
+             reinit_latency(ao);
+     }
      ao_hotplug_event(ao);
 +
 +    mp_mutex_unlock(&hotplug_lock);
      return noErr;
  }
  
-@@ -497,15 +545,27 @@ static bool register_hotplug_cb(struct ao *ao)
+@@ -526,15 +564,27 @@ static bool register_hotplug_cb(struct ao *ao)
      if (p->hotplug_cb_registration_times++)
          return true;
  
@@ -125,7 +109,7 @@ index 4b4bf1d..22856e4 100644
          if (err != noErr) {
              char *c1 = mp_tag_str(hotplug_properties[i]);
              char *c2 = mp_tag_str(err);
-@@ -517,6 +577,23 @@ static bool register_hotplug_cb(struct ao *ao)
+@@ -546,6 +596,23 @@ static bool register_hotplug_cb(struct ao *ao)
      return true;
  
  coreaudio_error:
@@ -149,7 +133,7 @@ index 4b4bf1d..22856e4 100644
      return false;
  }
  
-@@ -527,6 +604,17 @@ static void unregister_hotplug_cb(struct ao *ao)
+@@ -556,6 +623,17 @@ static void unregister_hotplug_cb(struct ao *ao)
      if (--p->hotplug_cb_registration_times)
          return;
  
@@ -167,7 +151,7 @@ index 4b4bf1d..22856e4 100644
      OSStatus err = noErr;
      for (int i = 0; i < MP_ARRAY_SIZE(hotplug_properties); i++) {
          AudioObjectPropertyAddress addr = {
-@@ -535,7 +623,7 @@ static void unregister_hotplug_cb(struct ao *ao)
+@@ -564,7 +642,7 @@ static void unregister_hotplug_cb(struct ao *ao)
              kAudioObjectPropertyElementMain
          };
          err = AudioObjectRemovePropertyListener(

@@ -1,34 +1,35 @@
 diff --git a/demux/demux.c b/demux/demux.c
+index 296993b..a5f39db 100644
 --- a/demux/demux.c
 +++ b/demux/demux.c
-@@ -124,6 +124,7 @@ const struct m_sub_options demux_conf = {
-         {"metadata-codepage", OPT_STRING(meta_cp)},
+@@ -133,6 +133,7 @@ const struct m_sub_options demux_conf = {
+         {"directory-filter-types", OPT_STRINGLIST(directory_filter)},
          {"autocreate-playlist", OPT_CHOICE(autocreate_playlist,
              {"no", 0}, {"filter", 1}, {"same", 2})},
 +        {"demuxer-force-retry-eof", OPT_BOOL(force_retry_eof)},
          {0}
      },
      .size = sizeof(struct demux_opts),
-@@ -193,6 +194,8 @@ struct demux_internal {
-
+@@ -205,6 +206,8 @@ struct demux_internal {
+ 
      bool warned_queue_overflow;
      bool eof;                   // whether we're in EOF state
 +    int eof_retry_count;        // for force_retry_eof: attempts before real EOF
 +    int64_t eof_retry_next_ns;  // earliest time to attempt next retry
      double min_secs;
      double hyst_secs;           // stop reading till there's hyst_secs remaining
-     bool hyst_active;
-@@ -2252,6 +2255,7 @@ static bool read_packet(struct demux_internal *in)
+     size_t hyst_bytes;          // stop reading till there's hyst_bytes remaining
+@@ -2423,6 +2426,7 @@ static bool read_packet(struct demux_internal *in)
      // Actually read a packet. Drop the lock while doing so, because waiting
      // for disk or network I/O can take time.
      in->reading = true;
 +    bool retry_eof = in->d_user->opts->force_retry_eof;
+     in->nav_pump = false;
      in->after_seek = false;
      in->after_seek_to_start = false;
-     mp_mutex_unlock(&in->lock);
-@@ -2272,19 +2276,47 @@ static bool read_packet(struct demux_internal *in)
+@@ -2444,19 +2448,47 @@ static bool read_packet(struct demux_internal *in)
      }
-
+ 
      if (!in->seeking) {
 -        if (eof) {
 +        if (eof && retry_eof && in->eof_retry_count < 200) {
@@ -78,4 +79,3 @@ diff --git a/demux/demux.c b/demux/demux.c
      }
      return true;
  }
-

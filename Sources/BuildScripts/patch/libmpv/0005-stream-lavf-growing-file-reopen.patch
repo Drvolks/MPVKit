@@ -1,17 +1,17 @@
 diff --git a/stream/stream.h b/stream/stream.h
-index fb62fdd..3694b73 100644
+index ed40d06..59e842e 100644
 --- a/stream/stream.h
 +++ b/stream/stream.h
-@@ -152,6 +152,7 @@ typedef struct stream {
+@@ -311,6 +311,7 @@ typedef struct stream {
      int mode; //STREAM_READ or STREAM_WRITE
      int stream_origin; // any STREAM_ORIGIN_*
      void *priv; // used for DVD, TV, RTSP etc
 +    void *growing_file_state; // stream_lavf growing-file reopen state
      char *url;  // filename/url (possibly including protocol prefix)
      char *path; // filename (url without protocol prefix)
-     char *mime_type; // when HTTP streaming is used
+     char *effective_url; // url after redirects, if known
 diff --git a/stream/stream_lavf.c b/stream/stream_lavf.c
-index 7910b82..45e41b9 100644
+index 67723c2..237e4f5 100644
 --- a/stream/stream_lavf.c
 +++ b/stream/stream_lavf.c
 @@ -19,6 +19,7 @@
@@ -22,23 +22,21 @@ index 7910b82..45e41b9 100644
  #include "options/path.h"
  #include "common/common.h"
  #include "common/msg.h"
-@@ -39,6 +40,7 @@
- #define OPT_BASE_STRUCT struct stream_lavf_params
- struct stream_lavf_params {
+@@ -38,11 +39,13 @@
+ 
+ struct stream_lavf_opts {
      char **avopts;
 +    bool growing_file;
-     bool cookies_enabled;
-     char *cookies_file;
-     char *useragent;
-@@ -55,6 +57,7 @@ struct stream_lavf_params {
+ };
+ 
  const struct m_sub_options stream_lavf_conf = {
      .opts = (const m_option_t[]) {
          {"stream-lavf-o", OPT_KEYVALUELIST(avopts)},
 +        {"stream-lavf-growing-file", OPT_BOOL(growing_file)},
-         {"http-header-fields", OPT_STRINGLIST(http_header_fields)},
-         {"user-agent", OPT_STRING(useragent)},
-         {"referrer", OPT_STRING(referrer)},
-@@ -80,14 +83,91 @@ static const char *const http_like[] =
+         {0}
+     },
+     .size = sizeof(struct stream_lavf_opts),
+@@ -53,14 +56,91 @@ static const char *const http_like[] =
  
  static int open_f(stream_t *stream);
  static struct mp_tags *read_icy(stream_t *stream);
@@ -130,7 +128,7 @@ index 7910b82..45e41b9 100644
  static int write_buffer(stream_t *s, void *buffer, int len)
  {
      AVIOContext *avio = s->priv;
-@@ -446,6 +526,23 @@ static int open_f(stream_t *stream)
+@@ -441,6 +521,23 @@ static int open_f(stream_t *stream)
      stream->get_size = get_size;
      stream->control = control;
      stream->close = close_f;
@@ -138,7 +136,7 @@ index 7910b82..45e41b9 100644
 +    // Growing-file mode: reopen HTTP on EOF to get new data
 +    {
 +        void *temp2 = talloc_new(NULL);
-+        struct stream_lavf_params *opts2 =
++        struct stream_lavf_opts *opts2 =
 +            mp_get_config_group(temp2, stream->global, &stream_lavf_conf);
 +        if (opts2->growing_file) {
 +            struct growing_file_state *gfs = talloc_zero(stream,

@@ -48,7 +48,7 @@ enum Library: String, CaseIterable {
     var version: String {
         switch self {
         case .libmpv:
-            return "v0.41.0"
+            return "v0.42.0"
         case .FFmpeg:
             return "n9.0.2"
         case .openssl:
@@ -396,6 +396,10 @@ private class BuildMPV: BaseBuild {
             "-Djpeg=disabled",
             "-Dvapoursynth=disabled",
             "-Drubberband=disabled",
+            // mpv 0.42 added a libcurl stream backend that takes http(s):// ahead of
+            // stream_lavf. Keep it off so the growing-file reopen patch (0005) still
+            // applies to HTTP, and so the build doesn't depend on a host libcurl.
+            "-Dlibcurl=disabled",
         ]
         if BaseBuild.options.enableGPL {
             array.append("-Dgpl=true")
