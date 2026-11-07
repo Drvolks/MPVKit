@@ -1,6 +1,6 @@
 # MPVKit (Drvolks Fork)
 
-[![mpv](https://img.shields.io/badge/mpv-v0.41.0-blue.svg)](https://github.com/mpv-player/mpv)
+[![mpv](https://img.shields.io/badge/mpv-v0.42.0-blue.svg)](https://github.com/mpv-player/mpv)
 [![ffmpeg](https://img.shields.io/badge/ffmpeg-n9.0.2-blue.svg)](https://github.com/FFmpeg/FFmpeg)
 [![license](https://img.shields.io/github/license/mpvkit/MPVKit)](https://github.com/mpvkit/MPVKit/main/LICENSE)
 
@@ -8,7 +8,7 @@ Fork of [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) with a custom video ou
 
 ## What's Different from Upstream
 
-This fork adds two things on top of MPVKit 0.41.0:
+This fork adds two things on top of MPVKit, built against mpv v0.42.0:
 
 ### 1. `vo_pixelbuffer` - Custom Video Output Plugin
 
@@ -57,13 +57,18 @@ A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` an
 https://github.com/Drvolks/MPVKit.git
 ```
 
-Use an exact version, e.g. `0.41.0-drvolks.13` (mpv v0.41.0, FFmpeg n9.0.2).
+Use an exact version, e.g. `0.42.0-drvolks.1` (mpv v0.42.0, FFmpeg n9.0.2).
+
+Notes for mpv 0.42:
+- `--tls-verify` is now on by default, but the gnutls build has no CA store on iOS/tvOS, so HTTPS streams fail unless you set `tls-verify=no` (or pass a CA bundle with `tls-ca-file`).
+- Built with `-Dlibcurl=disabled`: HTTP keeps going through `stream_lavf`, so `stream-lavf-growing-file` still works.
+- libplacebo comes from [Drvolks/libplacebo-build](https://github.com/Drvolks/libplacebo-build) (`7.387.0-drvolks.1`), since mpv 0.42 needs libplacebo >= 7.387.0.
 
 Add both products to your target:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.41.0-drvolks.13")
+    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.42.0-drvolks.1")
 ],
 targets: [
     .target(
