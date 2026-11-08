@@ -40,6 +40,10 @@ A new mpv VO (`vo=pixelbuffer`) that extracts decoded video frames as `CVPixelBu
 - PQ frames carry the file's mastering display (`kCVImageBufferMasteringDisplayColorVolumeKey`) and content light levels (`kCVImageBufferContentLightLevelInfoKey`), in the HEVC SEI byte layout. They reach the `CMVideoFormatDescription` and the TV, as with AVPlayer. Without them some TVs guess the content's brightness and show it too dark.
 - Values the file does not carry (zeros) are left out.
 
+**Renewing HTTP headers on open streams** (FFmpeg patch `0001-http-header-override.patch`):
+- `av_http_set_header_override(name, value)` (in `libavformat/avio.h`) replaces a header's value from the next HTTP request on, in every request that already carries it, including streams that are already open. Requests without the header are left alone; `NULL` removes the override.
+- mpv copies `http-header-fields` when a stream opens, so an expiring `Authorization` token used to break long HLS playback (every segment after expiry got a 401). Call this with the renewed token instead.
+
 ### 2. `MPVPixelBufferBridge` - Swift Package Target
 
 A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` and provides PiP support.
@@ -57,7 +61,7 @@ A Swift library that bridges `vo_pixelbuffer` to `AVSampleBufferDisplayLayer` an
 https://github.com/Drvolks/MPVKit.git
 ```
 
-Use an exact version, e.g. `0.42.0-drvolks.2` (mpv v0.42.0, FFmpeg n9.0.2).
+Use an exact version, e.g. `0.42.0-drvolks.3` (mpv v0.42.0, FFmpeg n9.0.2).
 
 Notes for mpv 0.42:
 - `--tls-verify` is now on by default, but the gnutls build has no CA store on iOS/tvOS, so HTTPS streams fail unless you set `tls-verify=no` (or pass a CA bundle with `tls-ca-file`).
@@ -68,7 +72,7 @@ Add both products to your target:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.42.0-drvolks.2")
+    .package(url: "https://github.com/Drvolks/MPVKit.git", exact: "0.42.0-drvolks.3")
 ],
 targets: [
     .target(
@@ -194,7 +198,7 @@ make clean
 make help
 ```
 
-The build system applies patches from `Sources/BuildScripts/patch/libmpv/` to the cloned mpv source, including the `vo_pixelbuffer` patch.
+The build system applies patches from `Sources/BuildScripts/patch/libmpv/` to the cloned mpv source, including the `vo_pixelbuffer` patch, and from `Sources/BuildScripts/patch/FFmpeg/` to the cloned FFmpeg source.
 
 ## About Metal Support
 

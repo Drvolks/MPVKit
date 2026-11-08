@@ -268,38 +268,38 @@ let package = Package(
 
         .binaryTarget(
             name: "Libavcodec",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libavcodec.xcframework.zip",
-            checksum: "a8b8daa90e61229a0d49fff82fdd90526515a8bfc1d5ef6d4c3d77487a02f88e"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libavcodec.xcframework.zip",
+            checksum: "4b3755a335d78c975a512bdcf795cffc261d9f91f51c55c50327c338804e1bea"
         ),
         .binaryTarget(
             name: "Libavdevice",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libavdevice.xcframework.zip",
-            checksum: "b31f76a599b14c9f5ad66a496b7bf1b7de7dfef386108c1845db4c98e39bb4ca"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libavdevice.xcframework.zip",
+            checksum: "207d1ba26e52af430e432100720b978f08d421d41ad0b2aca2cd155b43d0bf99"
         ),
         .binaryTarget(
             name: "Libavformat",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libavformat.xcframework.zip",
-            checksum: "44161e33c1496cd2d73073491241635db35c945d16b2d519dd9a00c8d8784a73"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libavformat.xcframework.zip",
+            checksum: "cb8459d7ee03dda563a2d1ad4e725fe4a056da82d462ef24b50175bd9a6133e6"
         ),
         .binaryTarget(
             name: "Libavfilter",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libavfilter.xcframework.zip",
-            checksum: "94bf665f0af63ab89d3353b11f757d1be50b37690b5276d089f6516efcc2ea39"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libavfilter.xcframework.zip",
+            checksum: "268338b190207a23131b1bd4b062c9159cf9cfcaef3c7d6073303e657ca295a6"
         ),
         .binaryTarget(
             name: "Libavutil",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libavutil.xcframework.zip",
-            checksum: "e39c5995521a1b64d6532a6a17c7a36e0da23966c77590de3ed78e25ed6552fc"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libavutil.xcframework.zip",
+            checksum: "711f374aee26d5bcac7eab17fb8bdea9747df7e700d8a54232c867cd8169fb35"
         ),
         .binaryTarget(
             name: "Libswresample",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libswresample.xcframework.zip",
-            checksum: "9874a14a103dfb6b258072d67fe75bcb33c7f5c03bffcc6feb483c09b8faf0b8"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libswresample.xcframework.zip",
+            checksum: "552b57b5c8eee9ea7c2bfe1327120706087f09fa34b2347730b2134454418e56"
         ),
         .binaryTarget(
             name: "Libswscale",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libswscale.xcframework.zip",
-            checksum: "9a18e86ae23dbcf9480dfacf4e12caaad4a8d651b374ab42bf1f7090e72b113a"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libswscale.xcframework.zip",
+            checksum: "34645e4de84f23fb21cdd7fbd6f55bb48dd2982725193d903293e81d29f809f7"
         ),
 
         .binaryTarget(
@@ -316,8 +316,8 @@ let package = Package(
 
         .binaryTarget(
             name: "Libmpv",
-            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.2/Libmpv.xcframework.zip",
-            checksum: "83973073f20a61d67f46104d14a41d4963da51216a6cb5fd6f62c5daefcbcde5"
+            url: "https://github.com/Drvolks/MPVKit/releases/download/0.42.0-drvolks.3/Libmpv.xcframework.zip",
+            checksum: "5c55032d154b0e97d66636b09793d573b1dacda4ad60b921d7d28e6835462975"
         ),
         //AUTO_GENERATE_TARGETS_END//
     ]
